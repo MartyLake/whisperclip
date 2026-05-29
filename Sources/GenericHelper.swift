@@ -503,14 +503,41 @@ enum GenericHelper {
             Logger.log("Found focused element, attempting to insert text", log: Logger.general)
             let axElement = element as! AXUIElement
 
-            // Try to set the value directly
-            let valueResult = AXUIElementSetAttributeValue(axElement, kAXValueAttribute as CFString, text as CFTypeRef)
+            // Get current value
+            var currentValue: CFTypeRef?
+            let getValueResult = AXUIElementCopyAttributeValue(axElement, kAXValueAttribute as CFString, &currentValue)
 
-            if valueResult == .success {
-                Logger.log("Successfully inserted text via Accessibility API", log: Logger.general)
-                return true
+            // Get selected text range
+            var selectedRangeValue: CFTypeRef?
+            let getRangeResult = AXUIElementCopyAttributeValue(axElement, kAXSelectedTextRangeAttribute as CFString, &selectedRangeValue)
+
+            if getValueResult == .success, getRangeResult == .success,
+               let currentValueStr = currentValue as? String,
+               let rangeRef = selectedRangeValue {
+                var range = CFRange(location: 0, length: 0)
+                AXValueGetValue(rangeRef as! AXValue, .cfRange, &range)
+
+                // Build new string: replace selected range (or insert at cursor if length=0)
+                let nsString = currentValueStr as NSString
+                let mutableString = NSMutableString(string: currentValueStr)
+                mutableString.replaceCharacters(in: NSRange(location: range.location, length: range.length), with: text)
+
+                // Set new value
+                let setValueResult = AXUIElementSetAttributeValue(axElement, kAXValueAttribute as CFString, mutableString as CFTypeRef)
+
+                if setValueResult == .success {
+                    // Update cursor position to end of inserted text
+                    var newCursorPos = CFRange(location: range.location + text.utf16.count, length: 0)
+                    if let cursorValue = AXValueCreate(.cfRange, &newCursorPos) {
+                        AXUIElementSetAttributeValue(axElement, kAXSelectedTextRangeAttribute as CFString, cursorValue)
+                    }
+                    Logger.log("Successfully inserted text via Accessibility API (cursor-aware)", log: Logger.general)
+                    return true
+                } else {
+                    Logger.log("Failed to set value via Accessibility (error: \(setValueResult.rawValue)), falling back to keyboard events", log: Logger.general)
+                }
             } else {
-                Logger.log("Failed to set value via Accessibility (error: \(valueResult.rawValue)), falling back to keyboard events", log: Logger.general)
+                Logger.log("Could not read current value/range, falling back to keyboard events", log: Logger.general)
             }
         } else {
             Logger.log("No focused element found (error: \(result.rawValue)), using keyboard events", log: Logger.general)
