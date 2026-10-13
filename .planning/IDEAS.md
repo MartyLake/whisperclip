@@ -29,6 +29,17 @@ Unscheduled ideas. Nothing here is committed work: an entry moves to `ROADMAP.md
 
 ---
 
+## Hugging Face token in the UI
+
+**Added:** 2026-10-13
+**Status:** deferred — not needed today
+
+- Planned for Phase 11.4 (TOKEN-01..03) on the assumption that `FluidInference/nemotron-3-diarization-coreml` was gated. Checked 2026-10-13: the repo is public and downloads anonymously, so the work was dropped from the phase.
+- Becomes relevant if a model the app needs is gated, or if anonymous Hub downloads start being rate-limited for users.
+- Shape if revived: token entered in Settings, stored in Keychain (never `UserDefaults`, never logged), passed to FluidAudio and WhisperKit through the `HF_TOKEN` environment variable (both read it from there); UI distinguishes "invalid token" from "no access to this repo".
+
+---
+
 ## Review community fork work
 
 **Added:** 2026-10-13

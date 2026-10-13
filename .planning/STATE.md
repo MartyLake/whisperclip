@@ -20,7 +20,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Точна транскрипція зустрічей з правильною атрибуцією спікерів.
-**Current focus:** Phase 11.4 planning (Nemotron 3 diarizer + HF token); Phase 11.3 open only on UAT steps 5-6
+**Current focus:** Phase 11.4 execution (Nemotron 3 diarizer); Phase 11.3 open only on UAT steps 5-6
 
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-03-22)
 
 Phase: 11.2 (true-streaming-asr) — COMPLETE
 Phase 11.3 (dependency upgrade + Gemma 4 E4B) — code complete, build and tests green, UAT 6/8 PASS on 2026-10-13. Open: UAT steps 5-6 (Qwen3 4B and one other existing LLM generate after the MLX migration) → GEMMA-02
-Next: Phase 11.4 (Nemotron 3 diarizer + HF token)
+Next: Phase 11.4 (Nemotron 3 diarizer) — PLANNED (4 plans), ready to execute 11.4-01 and 11.4-02 in parallel
 
 ### Resume 2026-10-13 (after pause since 2026-04-20)
 
@@ -38,6 +38,7 @@ Next: Phase 11.4 (Nemotron 3 diarizer + HF token)
 - Baseline (2026-10-13, Swift 6.3.3 / Xcode 26.6): the untouched branch does NOT build. FluidAudio 0.10.0 fails to compile in its own sources (`StreamingAsrManager.swift:198, 319, 470` — "sending 'asrManager' risks causing data races"), identically via `swift build --target FluidAudio` and via the Xcode app project. WhisperClip's own sources were never reached, so their status is still unknown. Consequence: the FluidAudio upgrade (DEP-03) moves from 11.4 into 11.3
 - WhisperKit decision revised (2026-10-13): upgrade to 1.1.1 inside Phase 11.3 as Plan 05 (DEP-04), after the build is green on 0.15.0 and before the manual checkpoint. Reason: 1.x has no `swift-transformers` dependency. Known mismatch to be fixed there: `Package.swift` pins 0.15.0, `project.yml` says 0.18.0
 - Phase 11.3 result (2026-10-13): app builds and runs on FluidAudio 0.17.7, `mlx-swift-lm` 3.32.3, WhisperKit 1.1.1 (`argmax-oss-swift`). Finding D-1: FluidAudio 0.17 moved model folders (`parakeet-tdt-0.6b-v3-coreml` → `parakeet-tdt-0.6b-v3`, `speaker-diarization-coreml` → `speaker-diarization`), so upgraded installs must re-download Parakeet and old folders are orphaned; the app does not check STT readiness before recording. Tracked in `IDEAS.md`, unscheduled
+- Phase 11.4 planned (2026-10-13). The Nemotron 3 CoreML repo is public, not gated — the HF token work (TOKEN-01..03) is deferred to `IDEAS.md`, reversing the earlier decision to request a token in the UI. Accepted cost: system-audio rows appear ~3 s later than today until Phase 13
 - Added `project.yml` + `xcode_gen.sh` (XcodeGen) to open the app as an Xcode app target; generated project lives in `Xcode/` (gitignored)
 
 ## Performance Metrics

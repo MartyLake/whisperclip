@@ -251,27 +251,33 @@ Plans:
 - [ ] 11.3-04-PLAN.md — Gemma 4 E4B, release-script bundle name, manual verification (GEMMA-01, GEMMA-02) — code done; UAT 6/8 PASS, steps 5-6 (existing LLMs) not run
 - [x] 11.3-05-PLAN.md — WhisperKit 0.15.0 → 1.1.1, runs before the manual checkpoint of 11.3-04 (DEP-04)
 
-#### Phase 11.4: Nemotron 3 Diarizer + HF Token (INSERTED)
+#### Phase 11.4: Nemotron 3 Diarizer (INSERTED)
 
-**Goal**: System-audio diarization runs on NVIDIA Nemotron 3 Diarization (CoreML, via FluidAudio `Nemotron3Diarizer`) with stable arrival-order speaker slots for up to 8 speakers; the user can supply a Hugging Face token in Settings to download the gated model
+**Goal**: System-audio diarization runs on NVIDIA Nemotron 3 Diarization (CoreML, via FluidAudio `Nemotron3Diarizer`) with stable arrival-order speaker slots for up to 8 speakers, exposed as a speaker timeline; the old `DiarizerManager` clustering path is removed
 **Depends on**: Phase 11.3
-**Requirements**: NEMO-01, NEMO-02, NEMO-03, NEMO-04, TOKEN-01, TOKEN-02, TOKEN-03
+**Requirements**: NEMO-01, NEMO-02, NEMO-03, NEMO-04
 **Scope notes**:
-- FluidAudio is already on 0.17.x from Phase 11.3; this phase only adds the Nemotron 3 integration
-- Nemotron 3 is frame-level (10 ms) with fixed speaker slots, so it does not fit the current `DiarizationProvider.diarize(samples) -> DiarizationResult` chunk contract as-is; the protocol is extended or a streaming sibling is added (`appendAudio` / `processBufferedAudio` / `finishStream`)
-- Default preset `fast32` (2.88 s latency); `fast` (1.04 s) and `fast128` (10.56 s) selectable. Radnyk used the `offline` profile (30.4 s) — not usable for live meetings
-- Model repo `FluidInference/nemotron-3-diarization-coreml` is gated until NVIDIA's public release: token is requested in the UI, stored in Keychain, never logged
-- The old `DiarizerManager` clustering path is retired, not kept as a fallback: per the owner (2026-10-13) it never produced usable attribution in practice. `DiarizerManager` wiring and the clustering-specific parts of `SpeakerBufferManager` are removed in this phase
-- Without a token or model access the app uses the existing source-based path: mic → "Me", system audio → one unattributed remote speaker. The UI states that speaker separation is off and why
+- **Hugging Face token dropped from this phase (2026-10-13).** The roadmap assumed the model repo was gated. Checked: `FluidInference/nemotron-3-diarization-coreml` is public (`gated: false`, anonymous download works). TOKEN-01..03 moved to `IDEAS.md`
+- Nemotron 3 is frame-level (10 ms) with fixed speaker slots, so the chunk contract `DiarizationProvider.diarize(samples) -> DiarizationResult` is replaced by a streaming provider (`append` / `process` / `finish`) feeding a `SpeakerTimeline`
+- Default preset `fast32` (2.88 s latency); `fast` (1.04 s) and `fast128` (10.56 s) selectable, ~199 MB each, only the selected one downloaded
+- The old `DiarizerManager` path is retired, not kept as a fallback: per the owner (2026-10-13) it never produced usable attribution in practice
+- Without the model the app uses the existing source-based path: mic → "Me", system audio → one unattributed remote speaker. The UI states that speaker separation is off and offers the download
+- Known cost: system-audio rows appear ~3 s after speech starts on `fast32` (today ~1 s with an unreliable label). Phase 13 restores immediate pending rows
 - Mic channel stays "Me" with no diarizer (decision of 2026-03-23 unchanged)
 **Success Criteria** (what must be TRUE):
 
-1. `./local_build.sh Debug` and `swift test --parallel` succeed; tests tied to the removed clustering path are deleted or rewritten, not left skipped
-2. With a valid token, the Nemotron 3 model downloads from Settings/Onboarding with progress and a clear error for "no access to gated repo" vs "invalid token"
+1. `./local_build.sh Debug` and `swift test --parallel` succeed; `DiarizerManager` is not referenced in `Sources/` or `Tests/`; tests tied to the removed path are deleted or rewritten, not left skipped
+2. The selected preset downloads from Settings/Onboarding with progress; without it the app records normally and says speaker separation is off
 3. In a live meeting with 3+ remote speakers, each speaker keeps one stable label for the whole session
 4. Speaker labels for system audio arrive within ~2 x preset latency of the audio being captured
-5. The token never appears in logs, crash output, or `UserDefaults`
-**Plans**: TBD
+5. Live transcription is not visibly slowed and memory does not grow steadily during a long recording
+**Plans**: 4 plans (01 and 02 can run in parallel)
+
+Plans:
+- [ ] 11.4-01-PLAN.md — SpeakerTimeline + streaming provider protocol + Nemotron 3 implementation, TDD, no wiring (NEMO-01, NEMO-02)
+- [ ] 11.4-02-PLAN.md — Model download / exists / delete, preset setting, Settings and Onboarding UI (NEMO-03, NEMO-04)
+- [ ] 11.4-03-PLAN.md — SpeakerBufferManager rewrite, MeetingRecorder wiring, removal of DiarizerManager (NEMO-01, NEMO-02, NEMO-04)
+- [ ] 11.4-04-PLAN.md — Manual verification with 3+ speakers (NEMO-01..04)
 
 #### Phase 12: Chat Bubble UI
 
@@ -292,7 +298,7 @@ Plans:
 **Goal**: A background Reconciler actor listens for diarizer metadata packets and retroactively patches `[Pending]` transcript segments with resolved speaker IDs; segments spanning a speaker boundary are split into two
 **Depends on**: Phase 11, Phase 11.4
 **Requirements**: REC-01, REC-02, REC-03
-**Design note (2026-10-13)**: built on the Nemotron 3 frame timeline from Phase 11.4 — for each segment (or word, where the ASR backend provides word timings) the Reconciler picks the speaker slot with the most activity over that time span. This replaces dominant-speaker-per-chunk resolution, the root cause of minority-speaker loss found in the 2026-03-22 debug session. With no diarizer available (no token) the Reconciler is idle and system-audio segments keep their source-based label.
+**Design note (2026-10-13)**: built on the Nemotron 3 frame timeline from Phase 11.4 — for each segment (or word, where the ASR backend provides word timings) the Reconciler picks the speaker slot with the most activity over that time span. This replaces dominant-speaker-per-chunk resolution, the root cause of minority-speaker loss found in the 2026-03-22 debug session. With no diarizer available (model not downloaded) the Reconciler is idle and system-audio segments keep their source-based label.
 **Success Criteria** (what must be TRUE):
 
 1. Every `[Pending]` segment in the live session receives a resolved speaker label within 2 diarizer windows of the audio being captured (~6 s on `fast32`)
@@ -322,7 +328,7 @@ Plans:
 
 ## Ideas
 
-Unscheduled ideas live in `.planning/IDEAS.md` (currently: review community fork work).
+Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folders after the FluidAudio upgrade, Hugging Face token, community fork review).
 
 ## Progress
 
@@ -342,7 +348,7 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: review community fork
 | 11.1 Audio-Active Pending State      | v1.2      | 4/4            | Complete    | 2026-04-19 |
 | 11.2 True Streaming ASR              | v1.2      | 4/4            | Complete    | 2026-04-19 |
 | 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 4/5            | UAT partial | -          |
-| 11.4 Nemotron 3 Diarizer + HF Token  | v1.2      | 0/TBD          | Not started | -          |
+| 11.4 Nemotron 3 Diarizer             | v1.2      | 0/4            | Planned     | -          |
 | 13. Reconciler — Async Enrichment    | v1.2      | 0/TBD          | Not started | -          |
 | 12. Chat Bubble UI                   | v1.2      | 0/TBD          | Not started | -          |
 | 14. Voice Profiles                   | v1.2      | 0/TBD          | Not started | -          |
