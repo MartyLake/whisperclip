@@ -225,7 +225,7 @@ Plans:
 
 **Goal**: The project builds and tests pass locally on the current toolchain (Swift 6.3.x), the LLM stack is migrated from `mlx-swift` 0.21.2 + `mlx-swift-examples` to `mlx-swift-lm` 3.32.x + `mlx-swift` 0.32.x, and Gemma 4 E4B is selectable as a local LLM
 **Depends on**: Phase 11.2
-**Requirements**: DEP-01, DEP-02, DEP-03, GEMMA-01, GEMMA-02
+**Requirements**: DEP-01, DEP-02, DEP-03, DEP-04, GEMMA-01, GEMMA-02
 **Scope notes**:
 - Baseline result (2026-10-13): the untouched branch does not build on Swift 6.3.3 — FluidAudio 0.10.0 fails in its own sources (data-race errors in `StreamingAsrManager.swift`). The FluidAudio upgrade to 0.17.x is therefore the first step of this phase, not part of 11.4; expect API changes in Parakeet (`StreamingEouAsrManager`) and `DiarizerManager` call sites
 - With no working baseline, regressions cannot be attributed by comparison: Parakeet streaming, file transcription and the meeting pipeline are re-verified manually after the upgrade
@@ -234,20 +234,22 @@ Plans:
 - Replace `MLXLLM` / `MLXLMCommon` products from `mlx-swift-examples` with the same products from `mlx-swift-lm`; adapt `LocalLLM.swift` to the current `LLMRegistry` / `ModelContainer` / generate API
 - Add `gemma-4-e4b-it-4bit` (`LLMRegistry.gemma4_e4b_it_4bit`) to `Const.swift`, `LocalLLM.swift`, `LLM.swift`, `ModelStorage.swift`
 - `build.sh` / `build_dev.sh` embed `mlx-swift_Cmlx.bundle` by name — verify the bundle name after the upgrade
+- WhisperKit 0.15.0 → 1.1.1 (decision revised 2026-10-13): 1.x vendors Hub/Tokenizers and drops the `swift-transformers` dependency, removing the version coupling with `mlx-swift-lm`. Done as its own plan after the build is green, before manual verification
 - CI is explicitly out of scope: local build only; the GitHub Actions workflow is fixed later
 **Success Criteria** (what must be TRUE):
 
-1. `./local_build.sh Debug` and `swift test --parallel` succeed locally on the upgraded dependency set (FluidAudio 0.17.x, `mlx-swift-lm` 3.32.x); Parakeet streaming and file transcription work in the running app
+1. `./local_build.sh Debug` and `swift test --parallel` succeed locally on the upgraded dependency set (FluidAudio 0.17.x, `mlx-swift-lm` 3.32.x, WhisperKit 1.1.x); Parakeet streaming, WhisperKit dictation and file transcription work in the running app
 2. Every LLM already in `TextLLMModelNames` still loads and generates (no model silently dropped by the registry change)
 3. Gemma 4 E4B downloads, loads, and produces a meeting summary and a prompt-enrichment result in the running app
 4. Gemma 4 chat template renders correctly — no leaked control tokens in output (Radnyk needed a template patch on the Python side; verify whether the Swift path needs one)
-**Plans**: 4 plans
+**Plans**: 5 plans (execution order 01 → 02 → 03 → 05 → 04 manual checkpoint)
 
 Plans:
-- [ ] 11.3-01-PLAN.md — Dependency graph: swift-tools 6.2, FluidAudio 0.17.x, mlx-swift-lm 3.32.x, tokenizer/Hub packages, project.yml sync (DEP-02, DEP-03)
-- [ ] 11.3-02-PLAN.md — FluidAudio call-site migration: Parakeet batch + streaming, diarizer, tests (DEP-03)
-- [ ] 11.3-03-PLAN.md — MLX LLM migration: LocalLLM load/generate, ModelDownloader, green build and tests (DEP-02, GEMMA-02)
-- [ ] 11.3-04-PLAN.md — Gemma 4 E4B, release-script bundle name, manual verification (GEMMA-01, GEMMA-02)
+- [x] 11.3-01-PLAN.md — Dependency graph: swift-tools 6.2, FluidAudio 0.17.x, mlx-swift-lm 3.32.x, tokenizer/Hub packages, project.yml sync (DEP-02, DEP-03)
+- [x] 11.3-02-PLAN.md — FluidAudio call-site migration: Parakeet batch + streaming, diarizer, tests (DEP-03)
+- [x] 11.3-03-PLAN.md — MLX LLM migration: LocalLLM load/generate, ModelDownloader, green build and tests (DEP-02, GEMMA-02)
+- [ ] 11.3-04-PLAN.md — Gemma 4 E4B, release-script bundle name, manual verification (GEMMA-01, GEMMA-02) — code done; UAT 6/8 PASS, steps 5-6 (existing LLMs) not run
+- [x] 11.3-05-PLAN.md — WhisperKit 0.15.0 → 1.1.1, runs before the manual checkpoint of 11.3-04 (DEP-04)
 
 #### Phase 11.4: Nemotron 3 Diarizer + HF Token (INSERTED)
 
@@ -318,6 +320,10 @@ Plans:
 
 ---
 
+## Ideas
+
+Unscheduled ideas live in `.planning/IDEAS.md` (currently: review community fork work).
+
 ## Progress
 
 | Phase                                | Milestone | Plans Complete | Status      | Completed  |
@@ -335,7 +341,7 @@ Plans:
 | 11. Live Transcription Stream        | v1.2      | 4/4            | Complete    | 2026-04-18 |
 | 11.1 Audio-Active Pending State      | v1.2      | 4/4            | Complete    | 2026-04-19 |
 | 11.2 True Streaming ASR              | v1.2      | 4/4            | Complete    | 2026-04-19 |
-| 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 0/4            | Planned     | -          |
+| 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 4/5            | UAT partial | -          |
 | 11.4 Nemotron 3 Diarizer + HF Token  | v1.2      | 0/TBD          | Not started | -          |
 | 13. Reconciler — Async Enrichment    | v1.2      | 0/TBD          | Not started | -          |
 | 12. Chat Bubble UI                   | v1.2      | 0/TBD          | Not started | -          |

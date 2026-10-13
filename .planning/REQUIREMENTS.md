@@ -38,12 +38,14 @@
 ### Залежності (DEP)
 
 - [x] **DEP-01**: Зафіксовано базовий стан: результат локальної збірки і тестів на гілці до будь-яких оновлень залежностей
-- [ ] **DEP-02**: LLM-стек переведено на `mlx-swift-lm` 3.32.x + `mlx-swift` 0.32.x; проєкт збирається локально, тести проходять (CI — поза скоупом)
-- [ ] **DEP-03**: FluidAudio оновлено до 0.17.x без регресій у Parakeet-стрімінгу та транскрипції файлів
+- [x] **DEP-02**: LLM-стек переведено на `mlx-swift-lm` 3.32.x + `mlx-swift` 0.32.x; проєкт збирається локально, тести проходять (CI — поза скоупом)
+- [x] **DEP-03**: FluidAudio оновлено до 0.17.x без регресій у Parakeet-стрімінгу та транскрипції файлів
+
+- [x] **DEP-04**: WhisperKit оновлено до 1.1.x (Argmax OSS SDK) без регресій у диктуванні, транскрипції файлів і стрімінгу; вже завантажені моделі не перезавантажуються
 
 ### Gemma 4 (GEMMA)
 
-- [ ] **GEMMA-01**: Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit`) доступна у списку локальних LLM, завантажується і генерує
+- [x] **GEMMA-01**: Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit`) доступна у списку локальних LLM, завантажується і генерує
 - [ ] **GEMMA-02**: Усі наявні LLM зі списку продовжують працювати після міграції
 
 ### Nemotron 3 Diarization (NEMO)
@@ -111,8 +113,9 @@
 | CHAT-04 | Phase 10 | Pending |
 
 | DEP-01 | Phase 11.3 | Complete (гілка не збирається: FluidAudio 0.10.0 vs Swift 6.3.3) |
-| DEP-02, DEP-03 | Phase 11.3 | Pending |
-| GEMMA-01, GEMMA-02 | Phase 11.3 | Pending |
+| DEP-02, DEP-03, DEP-04 | Phase 11.3 | Complete (UAT 2026-10-13) |
+| GEMMA-01 | Phase 11.3 | Complete (UAT 2026-10-13) |
+| GEMMA-02 | Phase 11.3 | Pending — UAT steps 5-6 (Qwen3 4B and one other existing LLM) not run |
 | NEMO-01..04 | Phase 11.4 | Pending |
 | TOKEN-01..03 | Phase 11.4 | Pending |
 | VOICE-01..04 | Phase 14 | Pending |
