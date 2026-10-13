@@ -20,14 +20,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Точна транскрипція зустрічей з правильною атрибуцією спікерів.
-**Current focus:** Phase 12 planning — chat-bubble-ui
+**Current focus:** Phase 11.3 planning — baseline build, MLX migration, Gemma 4 E4B
 
 ---
 
 ## Current Position
 
 Phase: 11.2 (true-streaming-asr) — COMPLETE
-Next: Phase 12 (chat-bubble-ui) — READY
+Next: Phase 11.3 (dependency upgrade + Gemma 4 E4B) — PLANNED (4 plans), ready to execute 11.3-01
+
+### Resume 2026-10-13 (after pause since 2026-04-20)
+
+- Roadmap revised: inserted 11.3 and 11.4, added 14; execution order 11.3 → 11.4 → 13 → 12 → 14
+- Source of the new work: `../stt-diarization` (Radnyk) — Nemotron 3 Diarization, Gemma 4 E4B, voice profiles
+- Decisions: Nemotron 3 runs natively via FluidAudio CoreML (no Python sidecar); HF token is requested in the UI because the CoreML model repo is gated; CI is deferred — local build only for now; the old `DiarizerManager` clustering path is retired in 11.4 (owner: it never worked in practice) — no-token fallback is source-based attribution
+- Baseline (2026-10-13, Swift 6.3.3 / Xcode 26.6): the untouched branch does NOT build. FluidAudio 0.10.0 fails to compile in its own sources (`StreamingAsrManager.swift:198, 319, 470` — "sending 'asrManager' risks causing data races"), identically via `swift build --target FluidAudio` and via the Xcode app project. WhisperClip's own sources were never reached, so their status is still unknown. Consequence: the FluidAudio upgrade (DEP-03) moves from 11.4 into 11.3
+- Added `project.yml` + `xcode_gen.sh` (XcodeGen) to open the app as an Xcode app target; generated project lives in `Xcode/` (gitignored)
 
 ## Performance Metrics
 

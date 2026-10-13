@@ -149,6 +149,8 @@ Plans:
 
 **Architecture:** Immediate Render + Async Enrichment — text appears instantly under `[Me]`/`[Pending]`, diarizer metadata arrives later and patches speaker labels without blocking the transcript stream.
 
+**Execution order (revised 2026-10-13):** 11.3 → 11.4 → 13 → 12 → 14. Phases 11.3 and 11.4 were inserted when work resumed after a six-month pause, to bring in the models proven in the sibling `../stt-diarization` (Radnyk) project: Nemotron 3 Diarization and Gemma 4 E4B. The Reconciler (13) now runs before Chat Bubble UI (12) because it is built directly on Nemotron 3 output.
+
 #### Phase 10: Mutable Data Model + Diarizer Micro-Windows
 
 **Goal**: `MeetingSegment` becomes a reactive mutable model that supports retroactive speaker updates; diarizer is restored with 5-10s micro-windows (replacing the disabled 30s batch mode), eliminating speaker blending
@@ -219,10 +221,60 @@ Plans:
 - [x] 11.2-03-PLAN.md — Parakeet StreamingEouAsrManager sessions + TranscriptionQueue priority lanes (LIVE-05, LIVE-06)
 - [x] 11.2-04-PLAN.md — MeetingRecorder fragment wiring + DualChannelAudioCapture timer removal (LIVE-04, LIVE-05, LIVE-06)
 
+#### Phase 11.3: Dependency Upgrade (FluidAudio, MLX) + Gemma 4 E4B (INSERTED)
+
+**Goal**: The project builds and tests pass locally on the current toolchain (Swift 6.3.x), the LLM stack is migrated from `mlx-swift` 0.21.2 + `mlx-swift-examples` to `mlx-swift-lm` 3.32.x + `mlx-swift` 0.32.x, and Gemma 4 E4B is selectable as a local LLM
+**Depends on**: Phase 11.2
+**Requirements**: DEP-01, DEP-02, DEP-03, GEMMA-01, GEMMA-02
+**Scope notes**:
+- Baseline result (2026-10-13): the untouched branch does not build on Swift 6.3.3 — FluidAudio 0.10.0 fails in its own sources (data-race errors in `StreamingAsrManager.swift`). The FluidAudio upgrade to 0.17.x is therefore the first step of this phase, not part of 11.4; expect API changes in Parakeet (`StreamingEouAsrManager`) and `DiarizerManager` call sites
+- With no working baseline, regressions cannot be attributed by comparison: Parakeet streaming, file transcription and the meeting pipeline are re-verified manually after the upgrade
+- Keep `project.yml` package pins in sync with `Package.swift`
+- `Package.swift`: swift-tools 5.10 → 6.2 (required by `mlx-swift-lm`); keep `swiftLanguageVersions: [.v5]` and `-strict-concurrency=complete`
+- Replace `MLXLLM` / `MLXLMCommon` products from `mlx-swift-examples` with the same products from `mlx-swift-lm`; adapt `LocalLLM.swift` to the current `LLMRegistry` / `ModelContainer` / generate API
+- Add `gemma-4-e4b-it-4bit` (`LLMRegistry.gemma4_e4b_it_4bit`) to `Const.swift`, `LocalLLM.swift`, `LLM.swift`, `ModelStorage.swift`
+- `build.sh` / `build_dev.sh` embed `mlx-swift_Cmlx.bundle` by name — verify the bundle name after the upgrade
+- CI is explicitly out of scope: local build only; the GitHub Actions workflow is fixed later
+**Success Criteria** (what must be TRUE):
+
+1. `./local_build.sh Debug` and `swift test --parallel` succeed locally on the upgraded dependency set (FluidAudio 0.17.x, `mlx-swift-lm` 3.32.x); Parakeet streaming and file transcription work in the running app
+2. Every LLM already in `TextLLMModelNames` still loads and generates (no model silently dropped by the registry change)
+3. Gemma 4 E4B downloads, loads, and produces a meeting summary and a prompt-enrichment result in the running app
+4. Gemma 4 chat template renders correctly — no leaked control tokens in output (Radnyk needed a template patch on the Python side; verify whether the Swift path needs one)
+**Plans**: 4 plans
+
+Plans:
+- [ ] 11.3-01-PLAN.md — Dependency graph: swift-tools 6.2, FluidAudio 0.17.x, mlx-swift-lm 3.32.x, tokenizer/Hub packages, project.yml sync (DEP-02, DEP-03)
+- [ ] 11.3-02-PLAN.md — FluidAudio call-site migration: Parakeet batch + streaming, diarizer, tests (DEP-03)
+- [ ] 11.3-03-PLAN.md — MLX LLM migration: LocalLLM load/generate, ModelDownloader, green build and tests (DEP-02, GEMMA-02)
+- [ ] 11.3-04-PLAN.md — Gemma 4 E4B, release-script bundle name, manual verification (GEMMA-01, GEMMA-02)
+
+#### Phase 11.4: Nemotron 3 Diarizer + HF Token (INSERTED)
+
+**Goal**: System-audio diarization runs on NVIDIA Nemotron 3 Diarization (CoreML, via FluidAudio `Nemotron3Diarizer`) with stable arrival-order speaker slots for up to 8 speakers; the user can supply a Hugging Face token in Settings to download the gated model
+**Depends on**: Phase 11.3
+**Requirements**: NEMO-01, NEMO-02, NEMO-03, NEMO-04, TOKEN-01, TOKEN-02, TOKEN-03
+**Scope notes**:
+- FluidAudio is already on 0.17.x from Phase 11.3; this phase only adds the Nemotron 3 integration
+- Nemotron 3 is frame-level (10 ms) with fixed speaker slots, so it does not fit the current `DiarizationProvider.diarize(samples) -> DiarizationResult` chunk contract as-is; the protocol is extended or a streaming sibling is added (`appendAudio` / `processBufferedAudio` / `finishStream`)
+- Default preset `fast32` (2.88 s latency); `fast` (1.04 s) and `fast128` (10.56 s) selectable. Radnyk used the `offline` profile (30.4 s) — not usable for live meetings
+- Model repo `FluidInference/nemotron-3-diarization-coreml` is gated until NVIDIA's public release: token is requested in the UI, stored in Keychain, never logged
+- The old `DiarizerManager` clustering path is retired, not kept as a fallback: per the owner (2026-10-13) it never produced usable attribution in practice. `DiarizerManager` wiring and the clustering-specific parts of `SpeakerBufferManager` are removed in this phase
+- Without a token or model access the app uses the existing source-based path: mic → "Me", system audio → one unattributed remote speaker. The UI states that speaker separation is off and why
+- Mic channel stays "Me" with no diarizer (decision of 2026-03-23 unchanged)
+**Success Criteria** (what must be TRUE):
+
+1. `./local_build.sh Debug` and `swift test --parallel` succeed; tests tied to the removed clustering path are deleted or rewritten, not left skipped
+2. With a valid token, the Nemotron 3 model downloads from Settings/Onboarding with progress and a clear error for "no access to gated repo" vs "invalid token"
+3. In a live meeting with 3+ remote speakers, each speaker keeps one stable label for the whole session
+4. Speaker labels for system audio arrive within ~2 x preset latency of the audio being captured
+5. The token never appears in logs, crash output, or `UserDefaults`
+**Plans**: TBD
+
 #### Phase 12: Chat Bubble UI
 
 **Goal**: MeetingDetailView displays the meeting transcript as iMessage-style grouped chat bubbles — consecutive segments from the same speaker form a single visual group, and speaker labels update in-place when diarizer resolves `[Pending]` attributions
-**Depends on**: Phase 10
+**Depends on**: Phase 10, Phase 13 (executed after the Reconciler — see execution order above)
 **Requirements**: CHAT-01, CHAT-02, CHAT-03, CHAT-04
 **Success Criteria** (what must be TRUE):
 
@@ -236,14 +288,32 @@ Plans:
 #### Phase 13: Reconciler — Async Speaker Enrichment
 
 **Goal**: A background Reconciler actor listens for diarizer metadata packets and retroactively patches `[Pending]` transcript segments with resolved speaker IDs; segments spanning a speaker boundary are split into two
-**Depends on**: Phase 11, Phase 12
+**Depends on**: Phase 11, Phase 11.4
 **Requirements**: REC-01, REC-02, REC-03
+**Design note (2026-10-13)**: built on the Nemotron 3 frame timeline from Phase 11.4 — for each segment (or word, where the ASR backend provides word timings) the Reconciler picks the speaker slot with the most activity over that time span. This replaces dominant-speaker-per-chunk resolution, the root cause of minority-speaker loss found in the 2026-03-22 debug session. With no diarizer available (no token) the Reconciler is idle and system-audio segments keep their source-based label.
 **Success Criteria** (what must be TRUE):
 
-1. Every `[Pending]` segment in the live session receives a resolved speaker label within 2 diarizer windows (~14s) of the audio being captured
+1. Every `[Pending]` segment in the live session receives a resolved speaker label within 2 diarizer windows of the audio being captured (~6 s on `fast32`)
 2. A segment whose timestamp range spans a speaker-change boundary is split into two segments at the boundary; no text is lost
 3. The Reconciler is a standalone actor with a unit-testable interface — speaker enrichment can be tested without live audio
-4. Chat Bubble UI groups update correctly after a split or label resolution — no stale groups or duplicate entries
+4. The existing flat transcript list updates correctly after a split or label resolution — no stale rows or duplicate entries (bubble-group behaviour is verified in Phase 12)
+   **Plans**: TBD
+
+#### Phase 14: Voice Profiles — Named Speakers Across Meetings
+
+**Goal**: A speaker named once is recognised in later meetings — port of Radnyk's voice-profile matching (per-speaker embeddings, cosine similarity, multiple samples per person) into the app
+**Depends on**: Phase 13, Phase 12
+**Requirements**: VOICE-01, VOICE-02, VOICE-03, VOICE-04 (supersedes v2 NAME-01..03)
+**Scope notes**:
+- Open question to resolve in research: which embedder. Radnyk uses SpeechBrain ECAPA (PyTorch) — not portable as-is. If FluidAudio's speaker-embedding model is used instead, existing `~/.radnyk/voice_profiles.json` vectors are incompatible and profiles are re-enrolled
+- Carry over from Radnyk: embedding built from clean 1.2-5 s segments, up to 15 s per speaker; similarity threshold (0.63 for ECAPA — must be re-tuned for a different embedder); speakers with < 5 s total speech are not offered for naming
+- Voice profiles are biometric data: stored locally only, deletable per person
+**Success Criteria** (what must be TRUE):
+
+1. Renaming "Speaker N" in a meeting applies to all of that speaker's segments and offers to save a voice profile
+2. In a later meeting the same person is labelled by name automatically, with no false match between two enrolled people in a 3+ speaker test
+3. Profiles can be listed, merged, and deleted in Settings
+4. No voice-profile data leaves the device
    **Plans**: TBD
 
 ---
@@ -265,8 +335,11 @@ Plans:
 | 11. Live Transcription Stream        | v1.2      | 4/4            | Complete    | 2026-04-18 |
 | 11.1 Audio-Active Pending State      | v1.2      | 4/4            | Complete    | 2026-04-19 |
 | 11.2 True Streaming ASR              | v1.2      | 4/4            | Complete    | 2026-04-19 |
-| 12. Chat Bubble UI                   | v1.2      | 0/TBD          | Not started | -          |
+| 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 0/4            | Planned     | -          |
+| 11.4 Nemotron 3 Diarizer + HF Token  | v1.2      | 0/TBD          | Not started | -          |
 | 13. Reconciler — Async Enrichment    | v1.2      | 0/TBD          | Not started | -          |
+| 12. Chat Bubble UI                   | v1.2      | 0/TBD          | Not started | -          |
+| 14. Voice Profiles                   | v1.2      | 0/TBD          | Not started | -          |
 
 \* Code complete and focused verification green; warning-clean build remains open carry-over work.
 
@@ -274,3 +347,4 @@ Plans:
 
 _Roadmap created: 2026-03-21_
 _v1.1 section added: 2026-03-22 — Speaker Diarization milestone (Phases 6-10)_
+_v1.2 revised: 2026-10-13 — inserted Phases 11.3, 11.4; added Phase 14; execution order 11.3 → 11.4 → 13 → 12 → 14_
