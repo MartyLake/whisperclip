@@ -1,11 +1,38 @@
 import Foundation
 import WhisperKit
 
+/// Serializes updates from WhisperKit's concurrent, sendable progress callback.
+private final class WhisperProgressState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lastPartialText = ""
+    private var didEmitFirstToken = false
+
+    func update(partialText: String, hasTokens: Bool) -> (emitFirstToken: Bool, partialText: String?) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let emitFirstToken = hasTokens && !didEmitFirstToken
+        didEmitFirstToken = didEmitFirstToken || hasTokens
+
+        guard !partialText.isEmpty, partialText != lastPartialText else {
+            return (emitFirstToken, nil)
+        }
+        lastPartialText = partialText
+        return (emitFirstToken, partialText)
+    }
+
+    var currentPartialText: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastPartialText
+    }
+}
+
 @MainActor
 class VoiceToTextModel: VoiceToTextProtocol {
     static let shared = VoiceToTextModel()
     private var pipe: WhisperKit?
-    private var loadingTask: Task<WhisperKit, Error>?
+    private var loadingTask: Task<Void, Error>?
     private var slidingBuffers: [AudioSource: [Float]] = [:]
     private var lastTranscriptions: [AudioSource: String] = [:]
     private var committedPrefixes: [AudioSource: String] = [:]
@@ -23,10 +50,10 @@ class VoiceToTextModel: VoiceToTextProtocol {
         }
 
         if let loadingTask {
-            self.pipe = try await loadingTask.value
+            try await loadingTask.value
         } else {
             let task = Task {
-                try await LocalWhisperKit.loadModel(
+                self.pipe = try await LocalWhisperKit.loadModel(
                     modelRepo: CurrentSTTModelRepo,
                     modelName: CurrentSTTModelName
                 )
@@ -34,7 +61,8 @@ class VoiceToTextModel: VoiceToTextProtocol {
             loadingTask = task
 
             do {
-                self.pipe = try await task.value
+                try await task.value
+                loadingTask = nil
             } catch {
                 loadingTask = nil
                 throw error
@@ -104,8 +132,7 @@ class VoiceToTextModel: VoiceToTextProtocol {
         let language = SettingsStore.shared.language
         let languageCode = language == "auto" ? nil : language
         let ts = TimeSpenter()
-        var lastPartialText = ""
-        var didEmitFirstToken = false
+        let progressState = WhisperProgressState()
 
         if GenericHelper.logSensitiveData() {
             Logger.log("Sending streaming transcription query to WhisperKit with lang: \(languageCode ?? "auto")", log: Logger.general)
@@ -142,18 +169,19 @@ class VoiceToTextModel: VoiceToTextProtocol {
             ),
             callback: { progress in
                 let partialText = sanitizeWhisperKitText(progress.text)
-                if !didEmitFirstToken, !progress.tokens.isEmpty {
-                    didEmitFirstToken = true
+                let update = progressState.update(
+                    partialText: partialText,
+                    hasTokens: !progress.tokens.isEmpty
+                )
+                if update.emitFirstToken {
                     Task { @MainActor in
                         onEvent(.firstToken)
                     }
                 }
-                guard !partialText.isEmpty, partialText != lastPartialText else {
-                    return nil
-                }
-                lastPartialText = partialText
-                Task { @MainActor in
-                    onToken(partialText)
+                if let partialText = update.partialText {
+                    Task { @MainActor in
+                        onToken(partialText)
+                    }
                 }
                 return nil
             }
@@ -166,6 +194,7 @@ class VoiceToTextModel: VoiceToTextProtocol {
         let transcription = sanitizeWhisperKitText(results.first?.text ?? "")
         guard !transcription.isEmpty else {
             Logger.log("No streaming transcription result received", log: Logger.general, type: .error)
+            let lastPartialText = progressState.currentPartialText
             let fallbackPartial = sanitizeWhisperKitText(lastPartialText)
             if !fallbackPartial.isEmpty {
                 if GenericHelper.logSensitiveData() {
@@ -181,6 +210,7 @@ class VoiceToTextModel: VoiceToTextProtocol {
         }
 
         let normalized = transcription
+        let lastPartialText = progressState.currentPartialText
         if !normalized.isEmpty, normalized != lastPartialText {
             await MainActor.run {
                 onToken(normalized)

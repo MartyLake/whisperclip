@@ -25,7 +25,7 @@ class ParakeetVoiceToTextModel: VoiceToTextProtocol {
             throw error
         }
 
-        guard let manager = self.manager, manager.isAvailable else {
+        guard let manager = self.manager, await manager.isAvailable else {
             self.manager = nil
             throw NSError(domain: "Transcriber", code: -1,
                           userInfo: [NSLocalizedDescriptionKey: "Failed to load Parakeet model. Please try again later."])
@@ -47,7 +47,8 @@ class ParakeetVoiceToTextModel: VoiceToTextProtocol {
 
         // Transcribe using FluidAudio's URL-based API
         let audioURL = URL(fileURLWithPath: filepath)
-        let result = try await manager.transcribe(audioURL)
+        var decoderState = try TdtDecoderState()
+        let result = try await manager.transcribe(audioURL, decoderState: &decoderState)
         let transcription = result.text
 
         if GenericHelper.logSensitiveData() {
@@ -86,7 +87,8 @@ class ParakeetVoiceToTextModel: VoiceToTextProtocol {
         }
 
         let audioURL = URL(fileURLWithPath: filepath)
-        let result = try await manager.transcribe(audioURL)
+        var decoderState = try TdtDecoderState()
+        let result = try await manager.transcribe(audioURL, decoderState: &decoderState)
         let transcription = result.text
 
         if GenericHelper.logSensitiveData() {
@@ -120,7 +122,7 @@ class ParakeetVoiceToTextModel: VoiceToTextProtocol {
                 self?.onEOU?(source)
             }
         }
-        try await session.loadModels(modelDir: streamingModelsDirectory())
+        try await session.loadModels(from: streamingModelsDirectory())
         setSession(session, for: source)
     }
 
@@ -249,7 +251,8 @@ class ParakeetVoiceToTextModel: VoiceToTextProtocol {
 
         try writeWAVFile(samples: samples, to: tempURL)
         let manager = try await LocalParakeet.loadModel()
-        let result = try await manager.transcribe(tempURL)
+        var decoderState = try TdtDecoderState()
+        let result = try await manager.transcribe(tempURL, decoderState: &decoderState)
         return result.text
     }
 

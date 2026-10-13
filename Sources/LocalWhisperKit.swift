@@ -24,31 +24,6 @@ class LocalWhisperKit {
         }
     }
 
-    private static func cleanupHubMetadataIfNeeded(in repoRoot: URL, modelName: String) {
-        let cacheRoot = repoRoot
-            .appendingPathComponent(".cache/huggingface/download", isDirectory: true)
-            .appendingPathComponent(modelName, isDirectory: true)
-        let fileManager = FileManager.default
-
-        guard let enumerator = fileManager.enumerator(
-            at: cacheRoot,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: []
-        ) else {
-            return
-        }
-
-        for case let fileURL as URL in enumerator where fileURL.pathExtension == "metadata" {
-            do {
-                try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
-                try fileManager.removeItem(at: fileURL)
-                Logger.log("Removed cached WhisperKit metadata file at \(fileURL.path)", log: Logger.general)
-            } catch {
-                Logger.log("Could not remove WhisperKit metadata file at \(fileURL.path): \(error.localizedDescription)", log: Logger.general, type: .error)
-            }
-        }
-    }
-
     private static func hasRequiredTokenizerFiles(in tokenizerRepoDir: URL) -> Bool {
         let fileManager = FileManager.default
         let requiredFiles = ["config.json", "tokenizer.json"]
@@ -80,7 +55,11 @@ class LocalWhisperKit {
 
         try fileManager.createDirectory(at: tokenizerRepoDir, withIntermediateDirectories: true)
 
-        var copiedAnyFiles = false
+        // Reuse the local tokenizer snapshot before attempting any network download.
+        if hasRequiredTokenizerFiles(in: tokenizerRepoDir) {
+            return tokenizerBase
+        }
+
         for filename in tokenizerFiles {
             let sourceURL = modelPath.appendingPathComponent(filename)
             guard fileManager.fileExists(atPath: sourceURL.path) else {
@@ -92,16 +71,6 @@ class LocalWhisperKit {
                 try fileManager.removeItem(at: destinationURL)
             }
             try fileManager.copyItem(at: sourceURL, to: destinationURL)
-            copiedAnyFiles = true
-        }
-
-        guard copiedAnyFiles else {
-            Logger.log(
-                "WhisperKit model \(modelName) does not contain tokenizer files for local cache",
-                log: Logger.general,
-                type: .error
-            )
-            return nil
         }
 
         if !hasRequiredTokenizerFiles(in: tokenizerRepoDir) {
@@ -127,11 +96,11 @@ class LocalWhisperKit {
     static func loadModel(modelRepo: String, modelName: String) async throws -> WhisperKit {
         Logger.log("Loading WhisperKit model", log: Logger.general)
         let modelPath = try await ModelStorage.shared.getModelPath(modelRepo: modelRepo, modelName: modelName)
-        let repoRoot = ModelStorage.shared.getModelDir(modelRepo: modelRepo, modelName: "")
-        cleanupHubMetadataIfNeeded(in: repoRoot, modelName: modelName)
         let tokenizerBase = try await prepareLocalTokenizerCache(from: modelPath, modelName: modelName)
 
-        Logger.log("Loading WhisperKit model from \(modelPath.path)", log: Logger.general)
+        if GenericHelper.logSensitiveData() {
+            Logger.log("Loading WhisperKit model from \(modelPath.path)", log: Logger.general)
+        }
         let pipe = try await WhisperKit(WhisperKitConfig(
             model: modelName,
             modelFolder: modelPath.path,

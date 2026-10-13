@@ -40,7 +40,8 @@ class ModelStorage {
              MlxCommunityRepo + "/" + Phi_3_5_mini_instruct_4bit,
              MlxCommunityRepo + "/" + Llama_3_2_3B_Instruct_4bit,
              MlxCommunityRepo + "/" + Qwen3_4B_4bit,
-             MlxCommunityRepo + "/" + Qwen3_30B_A3B_4bit:
+             MlxCommunityRepo + "/" + Qwen3_30B_A3B_4bit,
+             MlxCommunityRepo + "/" + Gemma_4_E4B_it_4bit:
             let modelContainer = try await LocalLLM.loadModel(modelRepo: modelRepo, modelName: modelName)
             Logger.log("Model \(modelRepo)/\(modelName) loaded", log: Logger.general)
 
@@ -57,7 +58,9 @@ class ModelStorage {
             let result = try await LocalLLM.generate(modelContainer: modelContainer,
                                     systemPrompt: systemPrompt,
                                     userPrompt: "What is the capital of France?")
-            Logger.log("Generated text: \(result)", log: Logger.general)
+            if GenericHelper.logSensitiveData() {
+                Logger.log("Generated text: \(result)", log: Logger.general)
+            }
         default:
             break
         }
@@ -95,7 +98,9 @@ class ModelStorage {
 
         Logger.log("Downloading model modelRepo: \(modelRepo), modelName: \(modelName)...", log: Logger.general)
         let modelPath = try await downloader.downloadSubfolder(modelID: modelRepo, subfolder: modelName, progress: progress)
-        Logger.log("Model modelRepo: \(modelRepo), modelName: \(modelName) downloaded to \(modelPath.path)", log: Logger.general)
+        if GenericHelper.logSensitiveData() {
+            Logger.log("Model modelRepo: \(modelRepo), modelName: \(modelName) downloaded to \(modelPath.path)", log: Logger.general)
+        }
 
         let hash = try GenericHelper.getDirectoryHash(ofDirectory: modelPath, skipping: digestFileName)
         let hashFile = modelPath.appendingPathComponent(digestFileName)

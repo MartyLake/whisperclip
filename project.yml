@@ -17,17 +17,20 @@ options:
 
 packages:
   WhisperKit:
-    url: https://github.com/argmaxinc/WhisperKit.git
-    exactVersion: 0.12.0
-  mlx-swift-examples:
-    url: https://github.com/ml-explore/mlx-swift-examples.git
-    revision: f17047c107a62d17a4ce91c62bed764a70f9a688
+    url: https://github.com/argmaxinc/argmax-oss-swift.git
+    exactVersion: 1.1.1
+  mlx-swift-lm:
+    url: https://github.com/ml-explore/mlx-swift-lm.git
+    exactVersion: 3.32.3
   mlx-swift:
     url: https://github.com/ml-explore/mlx-swift
-    exactVersion: 0.21.2
+    exactVersion: 0.32.3
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio.git
-    exactVersion: 0.10.0
+    exactVersion: 0.17.7
+  swift-transformers:
+    url: https://github.com/huggingface/swift-transformers.git
+    exactVersion: 1.1.9
   KeyboardShortcuts:
     url: https://github.com/sindresorhus/KeyboardShortcuts
     exactVersion: 2.4.0
@@ -43,10 +46,14 @@ targets:
     dependencies:
       - package: WhisperKit
         product: WhisperKit
-      - package: mlx-swift-examples
+      - package: mlx-swift-lm
         product: MLXLLM
-      - package: mlx-swift-examples
+      - package: mlx-swift-lm
         product: MLXLMCommon
+      - package: swift-transformers
+        product: Hub
+      - package: swift-transformers
+        product: Tokenizers
       - package: mlx-swift
         product: MLX
       - package: FluidAudio

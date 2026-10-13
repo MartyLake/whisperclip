@@ -64,7 +64,8 @@ final class ParakeetDiagnosticsTests: XCTestCase {
 
     private func directOfflineTranscript(for url: URL) async throws -> String {
         let manager = try await LocalParakeet.loadModel()
-        let result = try await manager.transcribe(url)
+        var decoderState = try TdtDecoderState()
+        let result = try await manager.transcribe(url, decoderState: &decoderState)
         return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -81,7 +82,7 @@ final class ParakeetDiagnosticsTests: XCTestCase {
         let samples = try resampledSamples(for: url)
 
         let manager = StreamingEouAsrManager(chunkSize: .ms160)
-        try await manager.loadModels(modelDir: LocalParakeet.getStreamingModelsDirectory(chunkSize: .ms160))
+        try await manager.loadModels(from: LocalParakeet.getStreamingModelsDirectory(chunkSize: .ms160))
         for chunk in chunked(samples: samples, chunkSize: liveLikeChunkSize) {
             let buffer = try audioBuffer(from: chunk)
             _ = try await manager.process(audioBuffer: buffer)

@@ -1623,7 +1623,8 @@ class MeetingRecorder: NSObject, ObservableObject {
 
         do {
             let manager = try await LocalParakeet.loadModel()
-            let offlineResult = try await manager.transcribe(audioURL)
+            var decoderState = try TdtDecoderState()
+            let offlineResult = try await manager.transcribe(audioURL, decoderState: &decoderState)
             let offlineText = offlineResult.text.trimmingCharacters(in: .whitespacesAndNewlines)
             Logger.log(
                 "Parakeet mic diagnostic: streaming chars=0 offline chars=\(offlineText.count) segment=\(segmentID.uuidString)",

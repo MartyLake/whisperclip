@@ -2,7 +2,7 @@ import Foundation
 import FluidAudio
 
 class LocalParakeet {
-    private static var cachedManager: AsrManager?
+    private static let managerCache = ManagerCache()
     private static let streamingChunkSize: StreamingChunkSize = .ms160
     
     /// Get the directory where Parakeet models are stored
@@ -37,7 +37,7 @@ class LocalParakeet {
     
     /// Check if Parakeet models are downloaded
     static func modelsExist() -> Bool {
-        return AsrModels.modelsExist(at: getModelsDirectory(), version: .v3)
+        return AsrModels.modelsExist(at: getModelsDirectory())
     }
 
     /// Check if streaming Parakeet EOU models are downloaded
@@ -69,9 +69,11 @@ class LocalParakeet {
         let directory = getModelsDirectory()
         if FileManager.default.fileExists(atPath: directory.path) {
             try FileManager.default.removeItem(at: directory)
-            Logger.log("Parakeet models deleted from \(directory.path)", log: Logger.general)
+            if GenericHelper.logSensitiveData() {
+                Logger.log("Parakeet models deleted from \(directory.path)", log: Logger.general)
+            }
         }
-        cachedManager = nil
+        managerCache.value = nil
     }
 
     /// Delete downloaded streaming Parakeet EOU models
@@ -79,7 +81,9 @@ class LocalParakeet {
         let directory = getStreamingModelsRootDirectory()
         if FileManager.default.fileExists(atPath: directory.path) {
             try FileManager.default.removeItem(at: directory)
-            Logger.log("Parakeet streaming models deleted from \(directory.path)", log: Logger.general)
+            if GenericHelper.logSensitiveData() {
+                Logger.log("Parakeet streaming models deleted from \(directory.path)", log: Logger.general)
+            }
         }
     }
     
@@ -111,7 +115,7 @@ class LocalParakeet {
         }
         
         // Clear any stale cache before downloading
-        clearCache()
+        await clearCache()
         
         progress(0.01)
         
@@ -127,27 +131,30 @@ class LocalParakeet {
 
                 // Initialize the manager to verify everything works
                 let manager = AsrManager(config: .default)
-                try await manager.initialize(models: models)
+                try await manager.loadModels(models)
 
                 // Verify manager is actually available
-                guard manager.isAvailable else {
+                guard await manager.isAvailable else {
                     throw NSError(domain: "LocalParakeet", code: 3,
                                   userInfo: [NSLocalizedDescriptionKey: "Parakeet manager initialized but not available"])
                 }
 
-                cachedManager = manager
+                managerCache.value = manager
             }
 
             progress(max(0.70, offlineExists ? 0.70 : 0.65))
 
             if !streamingExists {
-                try await DownloadUtils.downloadRepo(.parakeetEou160, to: getStreamingModelsBaseDirectory())
+                try await ModelHub.download(.parakeetEou160, to: getStreamingModelsBaseDirectory())
             }
 
             progress(1.0)
             Logger.log("Parakeet models downloaded and loaded successfully", log: Logger.general)
         } catch {
-            Logger.log("Failed to download Parakeet models: \(error)", log: Logger.general, type: .error)
+            let message = GenericHelper.logSensitiveData()
+                ? "Failed to download Parakeet models: \(error)"
+                : "Failed to download Parakeet models"
+            Logger.log(message, log: Logger.general, type: .error)
             throw error
         }
     }
@@ -161,7 +168,7 @@ class LocalParakeet {
         }
         
         // Return cached manager if available and valid
-        if let manager = cachedManager, manager.isAvailable {
+        if let manager = managerCache.value, await manager.isAvailable {
             return manager
         }
         
@@ -173,23 +180,42 @@ class LocalParakeet {
         // Create and initialize ASR manager
         let config = ASRConfig.default
         let manager = AsrManager(config: config)
-        try await manager.initialize(models: models)
+        try await manager.loadModels(models)
         
         // Verify manager is actually available
-        guard manager.isAvailable else {
-            clearCache()
+        guard await manager.isAvailable else {
+            await clearCache()
             throw NSError(domain: "LocalParakeet", code: 3,
                           userInfo: [NSLocalizedDescriptionKey: "Parakeet manager initialized but not available"])
         }
         
-        cachedManager = manager
+        managerCache.value = manager
 
         Logger.log("Parakeet model loaded successfully", log: Logger.general)
         return manager
     }
     
     /// Clear cached manager (useful when deleting models)
-    static func clearCache() {
-        cachedManager = nil
+    static func clearCache() async {
+        managerCache.value = nil
+    }
+}
+
+/// NSLock serializes the shared actor reference while keeping synchronous deletion APIs intact.
+private final class ManagerCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var manager: AsrManager?
+
+    var value: AsrManager? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return manager
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            manager = newValue
+        }
     }
 }
