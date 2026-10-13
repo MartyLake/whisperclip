@@ -46,7 +46,7 @@
 ### Gemma 4 (GEMMA)
 
 - [x] **GEMMA-01**: Gemma 4 E4B (`mlx-community/gemma-4-e4b-it-4bit`) доступна у списку локальних LLM, завантажується і генерує
-- [ ] **GEMMA-02**: Усі наявні LLM зі списку продовжують працювати після міграції
+- [x] **GEMMA-02**: Усі наявні LLM зі списку продовжують працювати після міграції
 
 ### Nemotron 3 Diarization (NEMO)
 
@@ -117,7 +117,7 @@
 | DEP-01 | Phase 11.3 | Complete (гілка не збирається: FluidAudio 0.10.0 vs Swift 6.3.3) |
 | DEP-02, DEP-03, DEP-04 | Phase 11.3 | Complete (UAT 2026-10-13) |
 | GEMMA-01 | Phase 11.3 | Complete (UAT 2026-10-13) |
-| GEMMA-02 | Phase 11.3 | Pending — UAT steps 5-6 (Qwen3 4B and one other existing LLM) not run |
+| GEMMA-02 | Phase 11.3 | Complete by owner decision 2026-10-13 — existing LLMs not run by hand, see `11.3-UAT.md` "Residual risk" |
 | NEMO-01..04 | Phase 11.4 | Pending |
 | TOKEN-01..03 | — | Deferred (модель публічна; див. `IDEAS.md`) |
 | VOICE-01..04 | Phase 14 | Pending |

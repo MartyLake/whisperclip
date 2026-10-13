@@ -248,7 +248,7 @@ Plans:
 - [x] 11.3-01-PLAN.md — Dependency graph: swift-tools 6.2, FluidAudio 0.17.x, mlx-swift-lm 3.32.x, tokenizer/Hub packages, project.yml sync (DEP-02, DEP-03)
 - [x] 11.3-02-PLAN.md — FluidAudio call-site migration: Parakeet batch + streaming, diarizer, tests (DEP-03)
 - [x] 11.3-03-PLAN.md — MLX LLM migration: LocalLLM load/generate, ModelDownloader, green build and tests (DEP-02, GEMMA-02)
-- [ ] 11.3-04-PLAN.md — Gemma 4 E4B, release-script bundle name, manual verification (GEMMA-01, GEMMA-02) — code done; UAT 6/8 PASS, steps 5-6 (existing LLMs) not run
+- [x] 11.3-04-PLAN.md — Gemma 4 E4B, release-script bundle name, manual verification (GEMMA-01, GEMMA-02) — UAT 6/8 PASS; steps 5-6 (existing LLMs) not run, closed by owner decision
 - [x] 11.3-05-PLAN.md — WhisperKit 0.15.0 → 1.1.1, runs before the manual checkpoint of 11.3-04 (DEP-04)
 
 #### Phase 11.4: Nemotron 3 Diarizer (INSERTED)
@@ -347,7 +347,7 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folder
 | 11. Live Transcription Stream        | v1.2      | 4/4            | Complete    | 2026-04-18 |
 | 11.1 Audio-Active Pending State      | v1.2      | 4/4            | Complete    | 2026-04-19 |
 | 11.2 True Streaming ASR              | v1.2      | 4/4            | Complete    | 2026-04-19 |
-| 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 4/5            | UAT partial | -          |
+| 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 5/5            | Complete    | 2026-10-13 |
 | 11.4 Nemotron 3 Diarizer             | v1.2      | 0/4            | Planned     | -          |
 | 13. Reconciler — Async Enrichment    | v1.2      | 0/TBD          | Not started | -          |
 | 12. Chat Bubble UI                   | v1.2      | 0/TBD          | Not started | -          |

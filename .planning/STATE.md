@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Точна транскрипція зустрічей з правильною атрибуцією спікерів.
-**Current focus:** Phase 11.4 execution (Nemotron 3 diarizer); Phase 11.3 open only on UAT steps 5-6
+**Current focus:** Phase 11.4 execution (Nemotron 3 diarizer)
 
 ---
 
 ## Current Position
 
 Phase: 11.2 (true-streaming-asr) — COMPLETE
-Phase 11.3 (dependency upgrade + Gemma 4 E4B) — code complete, build and tests green, UAT 6/8 PASS on 2026-10-13. Open: UAT steps 5-6 (Qwen3 4B and one other existing LLM generate after the MLX migration) → GEMMA-02
+Phase: 11.3 (dependency upgrade + Gemma 4 E4B) — COMPLETE 2026-10-13. Closed by owner decision with UAT 6/8 PASS; steps 5-6 (existing LLMs on the new MLX stack) were not run — residual risk recorded in `11.3-UAT.md`
 Next: Phase 11.4 (Nemotron 3 diarizer) — PLANNED (4 plans), ready to execute 11.4-01 and 11.4-02 in parallel
 
 ### Resume 2026-10-13 (after pause since 2026-04-20)
