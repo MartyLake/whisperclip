@@ -20,7 +20,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Точна транскрипція зустрічей з правильною атрибуцією спікерів.
-**Current focus:** Phase 11.4 execution (Nemotron 3 diarizer)
+**Current focus:** Phase 13 planning (Reconciler on the Nemotron 3 timeline)
 
 ---
 
@@ -28,7 +28,8 @@ See: .planning/PROJECT.md (updated 2026-03-22)
 
 Phase: 11.2 (true-streaming-asr) — COMPLETE
 Phase: 11.3 (dependency upgrade + Gemma 4 E4B) — COMPLETE 2026-10-13. Closed by owner decision with UAT 6/8 PASS; steps 5-6 (existing LLMs on the new MLX stack) were not run — residual risk recorded in `11.3-UAT.md`
-Next: Phase 11.4 (Nemotron 3 diarizer) — PLANNED (4 plans), ready to execute 11.4-01 and 11.4-02 in parallel
+Phase: 11.4 (Nemotron 3 diarizer) — COMPLETE 2026-10-14. UAT PASS (owner). System audio is split into "Speaker N" by Nemotron 3 `fast32`; `DiarizerManager` removed
+Next: Phase 13 (Reconciler) — planning
 
 ### Resume 2026-10-13 (after pause since 2026-04-20)
 
@@ -39,6 +40,8 @@ Next: Phase 11.4 (Nemotron 3 diarizer) — PLANNED (4 plans), ready to execute 1
 - WhisperKit decision revised (2026-10-13): upgrade to 1.1.1 inside Phase 11.3 as Plan 05 (DEP-04), after the build is green on 0.15.0 and before the manual checkpoint. Reason: 1.x has no `swift-transformers` dependency. Known mismatch to be fixed there: `Package.swift` pins 0.15.0, `project.yml` says 0.18.0
 - Phase 11.3 result (2026-10-13): app builds and runs on FluidAudio 0.17.7, `mlx-swift-lm` 3.32.3, WhisperKit 1.1.1 (`argmax-oss-swift`). Finding D-1: FluidAudio 0.17 moved model folders (`parakeet-tdt-0.6b-v3-coreml` → `parakeet-tdt-0.6b-v3`, `speaker-diarization-coreml` → `speaker-diarization`), so upgraded installs must re-download Parakeet and old folders are orphaned; the app does not check STT readiness before recording. Tracked in `IDEAS.md`, unscheduled
 - Phase 11.4 planned (2026-10-13). The Nemotron 3 CoreML repo is public, not gated — the HF token work (TOKEN-01..03) is deferred to `IDEAS.md`, reversing the earlier decision to request a token in the UI. Accepted cost: system-audio rows appear ~3 s later than today until Phase 13
+- Phase 11.4 result (2026-10-14): Nemotron 3 streaming diarization live. Review caught system-audio loss after ~40 s in `SpeakerBufferManager` (fixed before commit); first live run showed the model never loaded because `Nemotron3Models.load(config:directory:)` does not match the Hub cache layout (fixed `478e5e2`, now `loadFromHuggingFace`). Lesson: unit tests with a mock provider cannot catch model-loading failures — every model integration needs a live check
+- Environment (2026-10-14): Xcode 27.0 — needs the Metal Toolchain component (`xcodebuild -downloadComponent MetalToolchain`) or MLX does not compile
 - Added `project.yml` + `xcode_gen.sh` (XcodeGen) to open the app as an Xcode app target; generated project lives in `Xcode/` (gitignored)
 
 ## Performance Metrics

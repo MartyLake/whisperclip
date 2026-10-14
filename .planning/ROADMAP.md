@@ -274,10 +274,10 @@ Plans:
 **Plans**: 4 plans (01 and 02 can run in parallel)
 
 Plans:
-- [ ] 11.4-01-PLAN.md — SpeakerTimeline + streaming provider protocol + Nemotron 3 implementation, TDD, no wiring (NEMO-01, NEMO-02)
-- [ ] 11.4-02-PLAN.md — Model download / exists / delete, preset setting, Settings and Onboarding UI (NEMO-03, NEMO-04)
-- [ ] 11.4-03-PLAN.md — SpeakerBufferManager rewrite, MeetingRecorder wiring, removal of DiarizerManager (NEMO-01, NEMO-02, NEMO-04)
-- [ ] 11.4-04-PLAN.md — Manual verification with 3+ speakers (NEMO-01..04)
+- [x] 11.4-01-PLAN.md — SpeakerTimeline + streaming provider protocol + Nemotron 3 implementation, TDD, no wiring (NEMO-01, NEMO-02)
+- [x] 11.4-02-PLAN.md — Model download / exists / delete, preset setting, Settings and Onboarding UI (NEMO-03, NEMO-04)
+- [x] 11.4-03-PLAN.md — SpeakerBufferManager rewrite, MeetingRecorder wiring, removal of DiarizerManager (NEMO-01, NEMO-02, NEMO-04)
+- [x] 11.4-04-PLAN.md — Manual verification with 3+ speakers (NEMO-01..04) — UAT PASS 2026-10-14; first live run found the model never loaded (fixed `478e5e2`)
 
 #### Phase 12: Chat Bubble UI
 
@@ -348,7 +348,7 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folder
 | 11.1 Audio-Active Pending State      | v1.2      | 4/4            | Complete    | 2026-04-19 |
 | 11.2 True Streaming ASR              | v1.2      | 4/4            | Complete    | 2026-04-19 |
 | 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 5/5            | Complete    | 2026-10-13 |
-| 11.4 Nemotron 3 Diarizer             | v1.2      | 0/4            | Planned     | -          |
+| 11.4 Nemotron 3 Diarizer             | v1.2      | 4/4            | Complete    | 2026-10-14 |
 | 13. Reconciler — Async Enrichment    | v1.2      | 0/TBD          | Not started | -          |
 | 12. Chat Bubble UI                   | v1.2      | 0/TBD          | Not started | -          |
 | 14. Voice Profiles                   | v1.2      | 0/TBD          | Not started | -          |
