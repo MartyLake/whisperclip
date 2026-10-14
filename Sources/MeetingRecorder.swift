@@ -6,6 +6,11 @@ import FluidAudio
 typealias MeetingTranscriptCallback = (MeetingSegment) -> Void
 typealias MeetingErrorCallback = (Error) -> Void
 
+private struct SystemAudioBatch: Sendable {
+    let samples: [Float]
+    let time: TimeInterval
+}
+
 /// Manages audio recording and streaming transcription for meetings
 /// Uses dual-channel capture: microphone (Me) and system audio (Other)
 @MainActor
@@ -21,6 +26,7 @@ class MeetingRecorder: NSObject, ObservableObject {
     @Published private(set) var segmentCount: Int = 0
     @Published private(set) var lastError: String?
     @Published private(set) var activeSpeakers: [String] = ["Me", "Other"]
+    @Published private(set) var speakerSeparationActive = false
     @Published private(set) var hasSystemAudioPermission = false
     @Published private(set) var activeSpeakerLabel: String = ""
     
@@ -28,9 +34,10 @@ class MeetingRecorder: NSObject, ObservableObject {
 
     private var dualCapture: DualChannelAudioCapture?
     private var voiceToText: VoiceToTextProtocol?
-    private var diarizerManager: DiarizerManager?
     private var speakerBufferManager: SpeakerBufferManager?
     private var bufferConsumerTask: Task<Void, Never>?
+    private var systemBatchContinuation: AsyncStream<SystemAudioBatch>.Continuation?
+    private var systemBatchConsumerTask: Task<Void, Never>?
     private var systemFallbackBuffer: [Float] = []
     private var systemFallbackStartTime: TimeInterval = 0
     private let systemFallbackChunkDuration: TimeInterval = 5.0
@@ -165,26 +172,29 @@ class MeetingRecorder: NSObject, ObservableObject {
         }
 
         do {
-            let diarizer = DiarizerManager()
-            let models = try await DiarizerModels.load()
-            diarizer.initialize(models: models)
-
+            let preset = SettingsStore.shared.nemotron3Preset
+            guard ModelStorage.shared.nemotron3ModelsExist(for: preset) else {
+                throw MeetingRecorderError.recordingFailed
+            }
+            let models = try await Nemotron3Models.load(
+                config: preset.config, directory: ModelStorage.shared.getNemotron3ModelsDirectory())
             let manager = SpeakerBufferManager(
-                diarizer: diarizer,
+                provider: Nemotron3DiarizationProvider(preset: preset, models: models),
                 sampleRate: sampleRate,
-                pollingInterval: 150_000_000,
-                microWindowSeconds: 7
-            )
+                pollingInterval: 150_000_000)
 
             manager.onSpeechDetected = { [weak self] startTime, speakerLabel in
                 guard let self = self else { return }
                 Task { @MainActor in
+                    if !self.activeSpeakers.contains(speakerLabel) {
+                        self.activeSpeakers.append(speakerLabel)
+                    }
                     self.handleSystemSpeechDetected(startTime: startTime, speakerLabel: speakerLabel)
                 }
             }
 
-            diarizerManager = diarizer
             speakerBufferManager = manager
+            speakerSeparationActive = true
 
             await manager.start()
             bufferConsumerTask = Task { [weak self] in
@@ -199,12 +209,12 @@ class MeetingRecorder: NSObject, ObservableObject {
                 }
             }
 
-            Logger.log("Diarization enabled with 7s micro-windows", log: Logger.general)
+            Logger.log("Nemotron 3 speaker separation enabled", log: Logger.general)
         } catch {
-            diarizerManager = nil
             speakerBufferManager = nil
             bufferConsumerTask = nil
-            Logger.log("Failed to initialize diarizer, falling back to source-based transcription: \(error)", log: Logger.general, type: .error)
+            speakerSeparationActive = false
+            Logger.log("Nemotron 3 unavailable; using source-based speaker attribution", log: Logger.general, type: .error)
         }
         
         // Create dual channel capture
@@ -214,7 +224,20 @@ class MeetingRecorder: NSObject, ObservableObject {
             throw MeetingRecorderError.recordingFailed
         }
 
-        let activeBufferManager = speakerBufferManager
+        let (systemBatchStream, systemBatchContinuation) = AsyncStream.makeStream(
+            of: SystemAudioBatch.self, bufferingPolicy: .unbounded)
+        self.systemBatchContinuation = systemBatchContinuation
+        systemBatchConsumerTask = Task { @MainActor [weak self] in
+            for await batch in systemBatchStream {
+                guard let self else { return }
+                self.activeSpeakerLabel = ""
+                if let manager = self.speakerBufferManager {
+                    await manager.onAudioBatch(batch.samples, atTime: batch.time)
+                } else {
+                    await self.accumulateSystemFallback(batch.samples, atTime: batch.time)
+                }
+            }
+        }
         
         // Start dual channel capture
         do {
@@ -242,21 +265,8 @@ class MeetingRecorder: NSObject, ObservableObject {
                         }
                     }
                 },
-                onSystemBatch: { [weak self] samples, time in
-                    guard let self = self else { return }
-                    Task {
-                        if let manager = activeBufferManager {
-                            await MainActor.run {
-                                self.activeSpeakerLabel = ""
-                            }
-                            await manager.onAudioBatch(samples, atTime: time)
-                        } else {
-                            await MainActor.run {
-                                self.activeSpeakerLabel = ""
-                            }
-                            await self.accumulateSystemFallback(samples, atTime: time)
-                        }
-                    }
+                onSystemBatch: { samples, time in
+                    systemBatchContinuation.yield(SystemAudioBatch(samples: samples, time: time))
                 },
                 onMicrophoneLevel: { [weak self] db in
                     guard let self = self else { return }
@@ -267,6 +277,10 @@ class MeetingRecorder: NSObject, ObservableObject {
             )
         } catch {
             Logger.log("Failed to start dual capture: \(error)", log: Logger.general, type: .error)
+            systemBatchContinuation.finish()
+            self.systemBatchContinuation = nil
+            if let task = systemBatchConsumerTask { _ = await task.value }
+            systemBatchConsumerTask = nil
             throw MeetingRecorderError.recordingFailed
         }
         
@@ -280,7 +294,7 @@ class MeetingRecorder: NSObject, ObservableObject {
         
         // Update active speakers based on permissions
         if hasSystemAudioPermission {
-            activeSpeakers = ["Me", "Other"]
+            activeSpeakers = speakerSeparationActive ? ["Me"] : ["Me", "Other"]
         } else {
             activeSpeakers = ["Me"]
             lastError = "System audio not available. Only your voice will be captured."
@@ -296,24 +310,27 @@ class MeetingRecorder: NSObject, ObservableObject {
         durationTimer?.invalidate()
         durationTimer = nil
         
-        // === ZERO DATA LOSS TEARDOWN ===
-        // This order is non-negotiable. Rationale:
-        // 1. Stop producer -> flushes remaining open buffer, finishes the AsyncStream
-        // 2. Await consumer -> drains all ClosedSpeakerBuffers emitted by step 1
-        // 3. Stop capture -> returns final mic audio. Safe here because stopCapture()
-        //    only retrieves buffered mic samples; it does not affect the system audio
-        //    pipeline (SpeakerBufferManager already stopped in step 1).
-        // 4. Drain ASR queue -> waits for all in-flight predictions to finish
-        // 5. Process final mic chunk directly
-        // Cancelling the consumer before the producer would silently drop the last speaker turn.
+        // Stop capture before closing either audio stream so the final system callback
+        // is enqueued and the final microphone samples are returned.
+        var finalMicAudio: (samples: [Float], startTime: TimeInterval)?
+        if let capture = dualCapture {
+            finalMicAudio = await capture.stopCapture()
+        }
 
-        // Step 1: Stop producer (flushes final buffer)
+        // The single system-batch consumer drains callbacks in capture order.
+        systemBatchContinuation?.finish()
+        systemBatchContinuation = nil
+        if let task = systemBatchConsumerTask {
+            _ = await task.value
+            systemBatchConsumerTask = nil
+        }
+
+        // Flush the diarizer tail, then let its stream consumer process every buffer,
+        // including buffers yielded by finish().
         if let manager = speakerBufferManager {
             await manager.stop()
             Logger.log("SpeakerBufferManager stopped", log: Logger.general)
         }
-
-        // Step 2: Await consumer completion (drains all remaining closed buffers)
         if let task = bufferConsumerTask {
             _ = await task.value
             bufferConsumerTask = nil
@@ -335,14 +352,7 @@ class MeetingRecorder: NSObject, ObservableObject {
             )
         }
 
-        // Step 3: Stop capture and retrieve remaining mic audio
-        // stopCapture() only retrieves buffered mic samples; it does not affect the
-        // system audio pipeline (SpeakerBufferManager already stopped in step 1).
-        // Placed after consumer completion to avoid any race with system audio callbacks.
-        var finalMicAudio: (samples: [Float], startTime: TimeInterval)?
-        if let capture = dualCapture {
-            finalMicAudio = await capture.stopCapture()
-        }
+        // Finish microphone work only after both system streams have drained.
         let flushedMicSequence = await flushPendingMicFragmentBuffer()
         let finalPendingMicSegmentId = pendingMicSegmentId
         let finalMicFragmentSequence = max(latestMicFragmentSequence, flushedMicSequence ?? 0)
@@ -400,28 +410,27 @@ class MeetingRecorder: NSObject, ObservableObject {
     func cancelRecording() {
         durationTimer?.invalidate()
         durationTimer = nil
-
-        bufferConsumerTask?.cancel()
-        bufferConsumerTask = nil
-
-        if let manager = speakerBufferManager {
-            Task {
-                await manager.stop()
-            }
+        let capture = dualCapture
+        let manager = speakerBufferManager
+        let systemContinuation = systemBatchContinuation
+        let systemConsumer = systemBatchConsumerTask
+        let bufferConsumer = bufferConsumerTask
+        Task { @MainActor in
+            if let capture { _ = await capture.stopCapture() }
+            systemContinuation?.finish()
+            if let systemConsumer { _ = await systemConsumer.value }
+            if let manager { await manager.stop() }
+            if let bufferConsumer { _ = await bufferConsumer.value }
         }
-        
-        if let capture = dualCapture {
-            Task {
-                await capture.stopCapture()
-            }
-        }
-        
         isRecording = false
         cleanup()
         Logger.log("Meeting recording cancelled", log: Logger.general)
     }
     
     private func cleanup() {
+        systemBatchContinuation?.finish()
+        systemBatchContinuation = nil
+        systemBatchConsumerTask = nil
         ghostMicCleanupTask?.cancel()
         ghostMicCleanupTask = nil
         ghostSystemCleanupTask?.cancel()
@@ -438,9 +447,9 @@ class MeetingRecorder: NSObject, ObservableObject {
             parakeetVoiceToText.onEOU = nil
         }
         voiceToText = nil
-        diarizerManager = nil
         dualCapture = nil
         speakerBufferManager = nil
+        speakerSeparationActive = false
         bufferConsumerTask = nil
         activeSpeakerLabel = ""
         systemFallbackBuffer = []
@@ -479,7 +488,7 @@ class MeetingRecorder: NSObject, ObservableObject {
 
     /// Accumulates system audio samples when no diarizer is available.
     /// Dispatches fixed 5s chunks through the transcription queue as `.system`.
-    private func accumulateSystemFallback(_ samples: [Float], atTime time: TimeInterval) {
+    private func accumulateSystemFallback(_ samples: [Float], atTime time: TimeInterval) async {
         if systemFallbackBuffer.isEmpty {
             systemFallbackStartTime = time
         }
@@ -497,17 +506,14 @@ class MeetingRecorder: NSObject, ObservableObject {
                 systemFallbackStartTime += Double(chunkSampleCount) / Double(sampleRate)
             }
 
-            Task { [weak self] in
-                guard let self = self else { return }
-                await self.transcriptionQueue.enqueue(
-                    source: .system,
-                    samples: chunk,
-                    startTime: chunkStart,
-                    processor: { src, samp, start in
-                        await self.processAudioChunk(source: src, samples: samp, startTime: start)
-                    }
-                )
-            }
+            await transcriptionQueue.enqueue(
+                source: .system,
+                samples: chunk,
+                startTime: chunkStart,
+                processor: { [weak self] src, samp, start in
+                    await self?.processAudioChunk(source: src, samples: samp, startTime: start)
+                }
+            )
         }
     }
 

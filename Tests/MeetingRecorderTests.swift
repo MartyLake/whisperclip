@@ -118,42 +118,6 @@ final class MeetingRecorderTests: XCTestCase {
         XCTAssertEqual(micSpeaker.displayName, "Me", "Mic speaker displayName must be 'Me'")
     }
 
-    func testTeardownSequenceStopThenConsumeThenDrain() async throws {
-        let diarizer = MockDiarizationProvider()
-        diarizer.setResults([makeDiarizationResult(speakerId: "SPEAKER_00", durationSeconds: 1.0)])
-
-        let manager = SpeakerBufferManager(
-            diarizer: diarizer,
-            sampleRate: 16_000,
-            pollingInterval: 50_000_000
-        )
-
-        let completion = expectation(description: "consumer completed")
-        let received = LockIsolated<[ClosedSpeakerBuffer]>([])
-
-        await manager.start()
-
-        let consumerTask = Task {
-            for await buffer in manager.buffers {
-                received.withValue { values in
-                    values.append(buffer)
-                }
-            }
-            completion.fulfill()
-        }
-
-        await manager.onAudioBatch(Array(repeating: 0.1, count: 16_000), atTime: 0.0)
-        try await Task.sleep(nanoseconds: 200_000_000)
-
-        await manager.stop()
-        _ = await consumerTask.value
-        await fulfillment(of: [completion], timeout: 1.0)
-
-        let flushedBuffers = received.value
-        XCTAssertFalse(flushedBuffers.isEmpty)
-        XCTAssertEqual(flushedBuffers.first?.speakerLabel, "Speaker 1")
-    }
-
     func testTranscriptionQueueBufferOverload() async throws {
         let queue = TranscriptionQueue()
         var processedBuffers: [ClosedSpeakerBuffer] = []
@@ -170,6 +134,33 @@ final class MeetingRecorderTests: XCTestCase {
 
         XCTAssertEqual(processedBuffers.count, 1)
         XCTAssertEqual(processedBuffers.first?.speakerLabel, "Speaker 1")
+    }
+
+    func testFinishTailIsConsumedBeforeBufferConsumerCompletes() async {
+        let tail = StreamingDiarizationChunk(
+            probabilities: [Float](repeating: 0.9, count: 60) + [Float](repeating: 0, count: 30),
+            frameCount: 90,
+            numSpeakers: 1
+        )
+        let manager = SpeakerBufferManager(
+            provider: MockStreamingDiarizationProvider(finishResults: [tail]))
+        let queue = MockTranscriptionQueue()
+        let transcribed = LockIsolated<[ClosedSpeakerBuffer]>([])
+        await manager.onAudioBatch([Float](repeating: 0.1, count: 14_400), atTime: 0)
+
+        let consumer = Task { @MainActor in
+            for await buffer in manager.buffers {
+                await queue.enqueue(buffer: buffer) { processed in
+                    transcribed.withValue { $0.append(processed) }
+                }
+            }
+        }
+
+        await manager.stop()
+        _ = await consumer.value
+        let buffers = transcribed.value
+        XCTAssertEqual(buffers.count, 1)
+        XCTAssertEqual(buffers.first?.samples.count, 9_600)
     }
 
     // MARK: - GAP-08-01: System audio fallback when diarizer is unavailable

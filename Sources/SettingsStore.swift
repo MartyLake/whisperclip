@@ -29,6 +29,7 @@ struct DefaultSettings {
     static let recordingCount = 0
     static let donationDialogShown = false
     static let selectedLLMModelName = CurrentLLMModelName
+    static let nemotron3Preset = Nemotron3Preset.defaultPreset.rawValue
     static var prompts: [Prompt] {
         [
             Prompt(label: "None", content: ""),
@@ -74,6 +75,7 @@ class SettingsStore: ObservableObject {
         case recordingCount = "recordingCount"
         case donationDialogShown = "donationDialogShown"
         case selectedLLMModelName = "selectedLLMModelName"
+        case nemotron3Preset = "nemotron3Preset"
         case prompts = "prompts"
         case selectedPromptId = "selectedPromptId"
     }
@@ -98,6 +100,10 @@ class SettingsStore: ObservableObject {
         didSet {
             defaults.set(sttEngine.rawValue, forKey: Keys.sttEngine.rawValue)
         }
+    }
+
+    @Published var nemotron3Preset: Nemotron3Preset = .defaultPreset {
+        didSet { defaults.set(nemotron3Preset.rawValue, forKey: Keys.nemotron3Preset.rawValue) }
     }
 
     @Published var autoPasteEnabled: Bool = DefaultSettings.autoPasteEnabled {
@@ -268,6 +274,8 @@ class SettingsStore: ObservableObject {
         // Note: Property observers are temporarily disabled during init
         self.hasCompletedOnboarding = defaults.object(forKey: Keys.hasCompletedOnboarding.rawValue) == nil ? DefaultSettings.hasCompletedOnboarding : defaults.bool(forKey: Keys.hasCompletedOnboarding.rawValue)
         self.language = defaults.string(forKey: Keys.language.rawValue) ?? DefaultSettings.language
+        self.nemotron3Preset = defaults.string(forKey: Keys.nemotron3Preset.rawValue)
+            .flatMap(Nemotron3Preset.init(rawValue:)) ?? .defaultPreset
         if let sttEngineRaw = defaults.string(forKey: Keys.sttEngine.rawValue),
            let engine = STTEngine(rawValue: sttEngineRaw) {
             self.sttEngine = engine
@@ -453,6 +461,7 @@ class SettingsStore: ObservableObject {
         hasCompletedOnboarding = DefaultSettings.hasCompletedOnboarding
         language = DefaultSettings.language
         sttEngine = DefaultSettings.sttEngine
+        nemotron3Preset = .defaultPreset
         autoEnter = DefaultSettings.autoEnter
         startMinimized = DefaultSettings.startMinimized
         displayRecordingOverlay = DefaultSettings.displayRecordingOverlay

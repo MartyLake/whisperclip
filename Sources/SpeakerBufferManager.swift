@@ -1,332 +1,165 @@
 import Foundation
-import FluidAudio
 
-/// Accumulates per-speaker audio buffers, detects speaker changes via diarization polling,
-/// enforces 30s cap and 0.5s floor, resolves stable speaker labels, and emits closed buffers.
-///
-/// Audio ingestion (`onAudioBatch`) is O(n) append-only — zero inference on the hot path.
-/// Diarization runs in a separate polling loop at configurable cadence (default 150ms).
+/// Converts streaming slot probabilities into bounded, timeline-aligned audio buffers.
 actor SpeakerBufferManager {
-
-    // MARK: - Output Stream
-
-    /// Closed buffers ready for transcription. Caller: `for await buffer in manager.buffers { ... }`
     nonisolated let buffers: AsyncStream<ClosedSpeakerBuffer>
-
-    // MARK: - Configuration
-
-    /// Polling interval in nanoseconds. Default 150ms. Tuning knob for hardware profiles:
-    /// - M4 Pro: 150_000_000 (150ms) — near real-time
-    /// - M1 Air: 600_000_000 (600ms) — conservative
     nonisolated let pollingInterval: UInt64
-
-    /// Sample rate in Hz. Must match DiarizerManager expectation.
     nonisolated let sampleRate: Int
-
-    /// Micro-window duration: 7s by default.
-    nonisolated let microWindowSamples: Int
-
-    /// Maximum buffer duration: 30s = 480,000 samples at 16kHz
     nonisolated let maxSamplesPerBuffer: Int
-
-    /// Minimum buffer duration: 0.5s = 8,000 samples at 16kHz
     nonisolated let minSamplesPerBuffer: Int
-
-    // MARK: - Dependencies
-
-    private let diarizer: any DiarizationProvider
-    private var continuation: AsyncStream<ClosedSpeakerBuffer>.Continuation?
     nonisolated(unsafe) var onSpeechDetected: (@Sendable (TimeInterval, String) -> Void)?
 
-    // MARK: - Buffer State
-
-    private var accumulatedSamples: [Float] = []
-    private var bufferStartTime: TimeInterval = 0
-    private var currentSpeakerId: String?
-    private var lastBatchSampleCount: Int = 0
-
-    // MARK: - Speaker Label Resolution
-
-    /// Maps raw diarizer speakerIds ("SPEAKER_00") to display labels ("Speaker 1")
-    private var speakerLabelMap: [String: String] = [:]
-    private var nextSpeakerNumber: Int = 1
-
-    // MARK: - Polling Task
-
+    private let provider: any StreamingDiarizationProvider
+    private var continuation: AsyncStream<ClosedSpeakerBuffer>.Continuation?
     private var pollingTask: Task<Void, Never>?
+    private var timeline = SpeakerTimeline()
+    private var audio: [Float] = []
+    private var sessionStartTime: TimeInterval?
+    /// Timeline offset, in seconds, represented by `audio[0]`.
+    private var audioBaseSeconds: Double = 0
+    private var lastInputEndTime: TimeInterval?
+    private var emittedThrough: Double = 0
+    private var observedFrameCount = 0
+    private var activeObservedSlot: UInt8 = 0
+    private var silenceFrames = 0
 
-    // MARK: - Init
-
-    init(
-        diarizer: any DiarizationProvider,
-        sampleRate: Int = 16_000,
-        pollingInterval: UInt64 = 150_000_000,
-        microWindowSeconds: Int = 7
-    ) {
-        self.diarizer = diarizer
+    init(provider: any StreamingDiarizationProvider, sampleRate: Int = 16_000,
+         pollingInterval: UInt64 = 150_000_000) {
+        self.provider = provider
         self.sampleRate = sampleRate
         self.pollingInterval = pollingInterval
-        self.microWindowSamples = sampleRate * microWindowSeconds
-        self.maxSamplesPerBuffer = sampleRate * 30   // 30 seconds
-        self.minSamplesPerBuffer = sampleRate / 2    // 0.5 seconds (8,000 at 16kHz)
-
-        // AsyncStream setup — synchronous closure form (safe under strict concurrency)
-        var cap: AsyncStream<ClosedSpeakerBuffer>.Continuation?
-        self.buffers = AsyncStream { continuation in
-            cap = continuation
-        }
-        self.continuation = cap
+        maxSamplesPerBuffer = sampleRate * 30
+        minSamplesPerBuffer = sampleRate / 2
+        var streamContinuation: AsyncStream<ClosedSpeakerBuffer>.Continuation?
+        buffers = AsyncStream { streamContinuation = $0 }
+        continuation = streamContinuation
     }
 
-    // MARK: - Audio Ingestion (Hot Path)
+    func timelineSnapshot() -> SpeakerTimeline { timeline }
 
-    /// Append audio samples. Called from SCStreamOutput callback via Task { await manager.onAudioBatch(...) }.
-    /// O(n) append only — NO diarizer call here.
     func onAudioBatch(_ samples: [Float], atTime time: TimeInterval) {
-        if accumulatedSamples.isEmpty {
-            bufferStartTime = time
+        guard !samples.isEmpty else { return }
+        if sessionStartTime == nil {
+            sessionStartTime = time
+            audioBaseSeconds = 0
         }
-        accumulatedSamples.append(contentsOf: samples)
-        lastBatchSampleCount = samples.count
+        if let expected = lastInputEndTime, time > expected {
+            let missing = Int(((time - expected) * Double(sampleRate)).rounded())
+            if missing > 0 {
+                let silence = [Float](repeating: 0, count: missing)
+                audio.append(contentsOf: silence)
+                do { try provider.append(silence) }
+                catch { logProviderError(error) }
+            }
+        }
+        audio.append(contentsOf: samples)
+        do { try provider.append(samples) }
+        catch { logProviderError(error) }
+        lastInputEndTime = time + Double(samples.count) / Double(sampleRate)
     }
 
-    // MARK: - Lifecycle
-
-    /// Start the diarization polling loop.
     func start() {
         guard pollingTask == nil else { return }
         pollingTask = Task {
             while !Task.isCancelled {
-                pollDiarizer()
-                do {
-                    try await Task.sleep(nanoseconds: pollingInterval)
-                } catch {
-                    break  // Task cancelled during sleep
-                }
+                processAvailable(final: false)
+                do { try await Task.sleep(nanoseconds: pollingInterval) }
+                catch { break }
             }
         }
     }
 
-    /// Stop polling, flush or discard the current buffer, finish the AsyncStream.
     func stop() {
         pollingTask?.cancel()
         pollingTask = nil
-        flushOrDiscardCurrentBuffer()
+        do { appendResults(try provider.finish()) }
+        catch { logProviderError(error) }
+        emitTurns(final: true)
         continuation?.finish()
         continuation = nil
+        audio.removeAll(keepingCapacity: false)
     }
 
-    // MARK: - Polling
+    private func processAvailable(final: Bool) {
+        do { appendResults(try provider.process()) }
+        catch { logProviderError(error); return }
+        emitTurns(final: final)
+    }
 
-    private func pollDiarizer() {
-        // Check 30s cap regardless of diarization result.
-        // Loop handles the case where a single onAudioBatch exceeded 2x the cap.
-        while accumulatedSamples.count >= maxSamplesPerBuffer {
-            flushCappedBuffer()
+    private func appendResults(_ chunks: [StreamingDiarizationChunk]) {
+        for chunk in chunks {
+            timeline.append(probabilities: chunk.probabilities, frameCount: chunk.frameCount,
+                            numSpeakers: chunk.numSpeakers)
         }
-
-        // Need samples for diarization
-        guard !accumulatedSamples.isEmpty else { return }
-
-        let window = accumulatedSamples
-        let windowStartTime = bufferStartTime
-
-        do {
-            let result = try diarizer.diarize(window, sampleRate: sampleRate, atTime: windowStartTime)
-
-            // Empty result (silence/no speech) — discard full silent windows instead of
-            // emitting phantom buffers that later become failed transcript bubbles.
-            guard !result.segments.isEmpty else {
-                if accumulatedSamples.count >= microWindowSamples {
-                    discardSilentMicroWindow()
+        let sessionStart = sessionStartTime ?? 0
+        while observedFrameCount < timeline.frames.count {
+            let slot = timeline.frames[observedFrameCount]
+            if slot == 0 {
+                silenceFrames += 1
+                if silenceFrames >= 20 { activeObservedSlot = 0 }
+            } else {
+                silenceFrames = 0
+                if slot != activeObservedSlot {
+                    onSpeechDetected?(sessionStart + Double(observedFrameCount) * SpeakerTimeline.frameSeconds,
+                                      timeline.label(forSlot: Int(slot) - 1))
+                    activeObservedSlot = slot
                 }
-                return
             }
+            observedFrameCount += 1
+        }
+    }
 
-            // Extract dominant speaker by total speech duration
-            var durationBySpeaker: [String: Float] = [:]
-            for seg in result.segments {
-                durationBySpeaker[seg.speakerId, default: 0] += seg.durationSeconds
+    private func emitTurns(final: Bool) {
+        guard let sessionStartTime else { return }
+        let covered = timeline.coveredSeconds
+        let safeEnd = final ? covered : max(0, covered - SpeakerTimeline.mergeGapSeconds)
+        guard safeEnd > emittedThrough else { return }
+        let allTurns = timeline.turns(from: emittedThrough, to: covered)
+        let openTurn = final ? nil : allTurns.first(where: { $0.endSeconds >= safeEnd })
+        let capBoundary = openTurn.map { $0.startSeconds + 30 }
+        var turns = allTurns.filter { final || $0.endSeconds < safeEnd }
+        if let openTurn, let capBoundary, capBoundary <= safeEnd {
+            turns.append(SpeakerTurn(slot: openTurn.slot, startSeconds: openTurn.startSeconds,
+                                     endSeconds: min(openTurn.endSeconds, capBoundary)))
+        }
+        var cursor = emittedThrough
+        for turn in turns {
+            if turn.startSeconds > cursor { cursor = turn.startSeconds }
+            var start = max(turn.startSeconds, cursor)
+            while start < turn.endSeconds {
+                let end = min(turn.endSeconds, start + 30)
+                let lower = Int((start * Double(sampleRate)).rounded())
+                let upper = Int((end * Double(sampleRate)).rounded())
+                let baseSample = Int((audioBaseSeconds * Double(sampleRate)).rounded())
+                let audioLower = max(0, lower - baseSample)
+                let audioUpper = min(audio.count, upper - baseSample)
+                if audioUpper > audioLower, audioUpper - audioLower >= minSamplesPerBuffer {
+                    let label = turn.label
+                    continuation?.yield(ClosedSpeakerBuffer(samples: Array(audio[audioLower..<audioUpper]),
+                                                              speakerLabel: label,
+                                                              startTime: sessionStartTime + start))
+                }
+                cursor = end
+                start = end
             }
-
-            guard let dominantId = durationBySpeaker.max(by: { $0.value < $1.value })?.key,
-                  !dominantId.isEmpty else { return }
-
-            if let onSpeech = self.onSpeechDetected {
-                onSpeech(bufferStartTime, resolveLabel(for: dominantId))
-            }
-
-            // Speaker change detection
-            if let current = currentSpeakerId, current != dominantId {
-                let diarizerOffset = result.segments.first(where: { $0.speakerId == dominantId })
-                    .map { Double($0.startTimeSeconds) }
-                    ?? Double(accumulatedSamples.count) / Double(sampleRate)
-                let fallbackOffset = Double(max(0, accumulatedSamples.count - lastBatchSampleCount)) / Double(sampleRate)
-                let changeOffset = diarizerOffset > 0 ? diarizerOffset : fallbackOffset
-
-                Logger.log(
-                    "SpeakerBufferManager: speaker change \(current) -> \(dominantId) at \(String(format: "%.2f", changeOffset))s",
-                    log: Logger.general)
-                splitAndFlushCurrentBuffer(atSeconds: changeOffset, previousSpeakerId: current, newSpeakerId: dominantId)
-                currentSpeakerId = dominantId
-                return
-            }
-
-            currentSpeakerId = dominantId
-
-            if accumulatedSamples.count >= microWindowSamples {
-                flushMicroWindow()
-            }
-
-        } catch {
-            Logger.log("SpeakerBufferManager: diarization error: \(error)", log: Logger.general, type: .error)
+        }
+        let pendingStart = openTurn.map { turn in
+            (turn.startSeconds + 30 <= safeEnd) ? turn.startSeconds + 30 : turn.startSeconds
+        }
+        emittedThrough = min(safeEnd, pendingStart ?? safeEnd)
+        // Retain at most the unresolved tail plus one 30 s cap window.
+        let keepFrom = max(0, emittedThrough - 30)
+        let baseSample = Int((audioBaseSeconds * Double(sampleRate)).rounded())
+        let keepSample = Int((keepFrom * Double(sampleRate)).rounded())
+        let discardSamples = min(audio.count, max(0, keepSample - baseSample))
+        if discardSamples > 0 {
+            audio.removeFirst(discardSamples)
+            audioBaseSeconds += Double(discardSamples) / Double(sampleRate)
         }
     }
 
-    // MARK: - Buffer Flush
-
-    nonisolated func splitBuffer(_ samples: [Float], atSeconds offset: Double) -> ([Float], [Float]) {
-        let splitIndex = min(max(0, Int(offset * Double(sampleRate))), samples.count)
-        return (Array(samples.prefix(splitIndex)), Array(samples.dropFirst(splitIndex)))
-    }
-
-    private func flushMicroWindow() {
-        let windowSamples = Array(accumulatedSamples.prefix(microWindowSamples))
-        let overflow = Array(accumulatedSamples.dropFirst(microWindowSamples))
-
-        guard windowSamples.count >= minSamplesPerBuffer else {
-            accumulatedSamples = overflow
-            return
-        }
-
-        let label = resolveLabel(for: currentSpeakerId)
-        let closed = ClosedSpeakerBuffer(
-            samples: windowSamples,
-            speakerLabel: label,
-            startTime: bufferStartTime
-        )
-
-        Logger.log(
-            "SpeakerBufferManager: micro-window flush \(label) \(windowSamples.count) samples",
-            log: Logger.general
-        )
-
-        continuation?.yield(closed)
-        bufferStartTime += Double(windowSamples.count) / Double(sampleRate)
-        accumulatedSamples = overflow
-    }
-
-    private func discardSilentMicroWindow() {
-        let discardedCount = min(accumulatedSamples.count, microWindowSamples)
-        let overflow = Array(accumulatedSamples.dropFirst(discardedCount))
-
-        Logger.log(
-            "SpeakerBufferManager: discarded silent micro-window \(discardedCount) samples",
-            log: Logger.general
-        )
-
-        bufferStartTime += Double(discardedCount) / Double(sampleRate)
-        accumulatedSamples = overflow
-        currentSpeakerId = nil
-    }
-
-    private func splitAndFlushCurrentBuffer(
-        atSeconds offset: Double,
-        previousSpeakerId: String,
-        newSpeakerId: String
-    ) {
-        let (firstSamples, secondSamples) = splitBuffer(accumulatedSamples, atSeconds: offset)
-
-        if firstSamples.count >= minSamplesPerBuffer {
-            continuation?.yield(
-                ClosedSpeakerBuffer(
-                    samples: firstSamples,
-                    speakerLabel: resolveLabel(for: previousSpeakerId),
-                    startTime: bufferStartTime
-                )
-            )
-        }
-
-        let splitTime = bufferStartTime + Double(firstSamples.count) / Double(sampleRate)
-        bufferStartTime = splitTime
-        accumulatedSamples = secondSamples
-        currentSpeakerId = newSpeakerId
-    }
-
-    /// Force-flush exactly `maxSamplesPerBuffer` samples, keeping any overflow in `accumulatedSamples`.
-    /// Used only by the 30s cap check in `pollDiarizer()`.
-    private func flushCappedBuffer() {
-        let cappedSamples = Array(accumulatedSamples.prefix(maxSamplesPerBuffer))
-        let overflow = Array(accumulatedSamples.dropFirst(maxSamplesPerBuffer))
-
-        guard cappedSamples.count >= minSamplesPerBuffer else {
-            accumulatedSamples = overflow
-            return
-        }
-
-        let label = resolveLabel(for: currentSpeakerId)
-        let closed = ClosedSpeakerBuffer(
-            samples: cappedSamples,
-            speakerLabel: label,
-            startTime: bufferStartTime
-        )
-
-        Logger.log(
-            "SpeakerBufferManager: force-flushed capped buffer \(label) \(cappedSamples.count) samples",
-            log: Logger.general)
-
-        continuation?.yield(closed)
-
-        // Advance bufferStartTime for the overflow
-        bufferStartTime += Double(maxSamplesPerBuffer) / Double(sampleRate)
-        accumulatedSamples = overflow
-    }
-
-    private func flushCurrentBuffer() {
-        guard accumulatedSamples.count >= minSamplesPerBuffer else {
-            // Below 0.5s floor — discard
-            Logger.log(
-                "SpeakerBufferManager: discarded short buffer \(accumulatedSamples.count) < \(minSamplesPerBuffer) samples",
-                log: Logger.general)
-            accumulatedSamples = []
-            return
-        }
-
-        let label = resolveLabel(for: currentSpeakerId)
-        let closed = ClosedSpeakerBuffer(
-            samples: accumulatedSamples,
-            speakerLabel: label,
-            startTime: bufferStartTime
-        )
-
-        Logger.log(
-            "SpeakerBufferManager: flushed buffer \(label) \(accumulatedSamples.count) samples",
-            log: Logger.general)
-
-        continuation?.yield(closed)
-        accumulatedSamples = []
-    }
-
-    /// Flush if >= minSamples, discard if shorter. Used by stop().
-    private func flushOrDiscardCurrentBuffer() {
-        guard !accumulatedSamples.isEmpty else { return }
-        flushCurrentBuffer()
-    }
-
-    // MARK: - Speaker Label Resolution
-
-    private func resolveLabel(for rawSpeakerId: String?) -> String {
-        guard let rawId = rawSpeakerId, !rawId.isEmpty else {
-            return "Speaker \(nextSpeakerNumber)"
-        }
-
-        if let existing = speakerLabelMap[rawId] {
-            return existing
-        }
-
-        let label = "Speaker \(nextSpeakerNumber)"
-        speakerLabelMap[rawId] = label
-        nextSpeakerNumber += 1
-        return label
+    private func logProviderError(_ error: Error) {
+        Logger.log("Speaker diarization provider error: \(error.localizedDescription)",
+                   log: Logger.general, type: .error)
     }
 }
