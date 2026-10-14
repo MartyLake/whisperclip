@@ -176,8 +176,10 @@ class MeetingRecorder: NSObject, ObservableObject {
             guard ModelStorage.shared.nemotron3ModelsExist(for: preset) else {
                 throw MeetingRecorderError.recordingFailed
             }
-            let models = try await Nemotron3Models.load(
-                config: preset.config, directory: ModelStorage.shared.getNemotron3ModelsDirectory())
+            // The Hub cache keeps the bundle under `monolithic/v2/` and the `.bin` assets at the
+            // root, which `load(config:directory:)` cannot read. With a complete cache this
+            // call loads from disk without network access.
+            let models = try await Nemotron3Models.loadFromHuggingFace(config: preset.config)
             let manager = SpeakerBufferManager(
                 provider: Nemotron3DiarizationProvider(preset: preset, models: models),
                 sampleRate: sampleRate,
@@ -214,7 +216,10 @@ class MeetingRecorder: NSObject, ObservableObject {
             speakerBufferManager = nil
             bufferConsumerTask = nil
             speakerSeparationActive = false
-            Logger.log("Nemotron 3 unavailable; using source-based speaker attribution", log: Logger.general, type: .error)
+            // FluidAudio errors can contain model paths, so the detail is sensitive.
+            let detail = GenericHelper.logSensitiveData() ? ": \(error)" : ""
+            Logger.log("Nemotron 3 unavailable; using source-based speaker attribution\(detail)",
+                       log: Logger.general, type: .error)
         }
         
         // Create dual channel capture
