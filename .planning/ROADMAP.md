@@ -298,6 +298,11 @@ Plans:
 **Goal**: A background Reconciler actor listens for diarizer metadata packets and retroactively patches `[Pending]` transcript segments with resolved speaker IDs; segments spanning a speaker boundary are split into two
 **Depends on**: Phase 11, Phase 11.4
 **Requirements**: REC-01, REC-02, REC-03
+**Scope notes (2026-10-14)**:
+- Owner decisions: text first, label later — system audio is transcribed immediately and shown under "Pending"; Parakeet rows are split by word timings, WhisperKit rows are never split (majority speaker)
+- System audio is cut at pauses (≥ 400 ms, 1-8 s) instead of fixed 5 s; a system energy VAD creates the pending row at onset
+- `SpeakerBufferManager` becomes a timeline producer only; the turn-cutting buffer path from 11.4 is removed
+- Rows stay pending until resolved, so splits happen before the first storage write
 **Design note (2026-10-13)**: built on the Nemotron 3 frame timeline from Phase 11.4 — for each segment (or word, where the ASR backend provides word timings) the Reconciler picks the speaker slot with the most activity over that time span. This replaces dominant-speaker-per-chunk resolution, the root cause of minority-speaker loss found in the 2026-03-22 debug session. With no diarizer available (model not downloaded) the Reconciler is idle and system-audio segments keep their source-based label.
 **Success Criteria** (what must be TRUE):
 
@@ -305,7 +310,14 @@ Plans:
 2. A segment whose timestamp range spans a speaker-change boundary is split into two segments at the boundary; no text is lost
 3. The Reconciler is a standalone actor with a unit-testable interface — speaker enrichment can be tested without live audio
 4. The existing flat transcript list updates correctly after a split or label resolution — no stale rows or duplicate entries (bubble-group behaviour is verified in Phase 12)
-   **Plans**: TBD
+**Plans**: 5 plans (01, 02, 03 can run in parallel)
+
+Plans:
+- [ ] 13-01-PLAN.md — Timed transcription: word timings from Parakeet, `words = nil` for WhisperKit (REC-02)
+- [ ] 13-02-PLAN.md — `SpeakerReconciler` actor: resolution rules, coverage, deadline, TDD (REC-01..03)
+- [ ] 13-03-PLAN.md — Timeline window queries on `SpeakerBufferManager` + pause-based `SystemAudioChunker`, TDD (REC-01)
+- [ ] 13-04-PLAN.md — Wiring: one system ASR path, pending-until-resolved, split API in `MeetingSession`, stop order, old buffer path removed (REC-01..03)
+- [ ] 13-05-PLAN.md — Manual verification (REC-01..03)
 
 #### Phase 14: Voice Profiles — Named Speakers Across Meetings
 
@@ -349,7 +361,7 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folder
 | 11.2 True Streaming ASR              | v1.2      | 4/4            | Complete    | 2026-04-19 |
 | 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 5/5            | Complete    | 2026-10-13 |
 | 11.4 Nemotron 3 Diarizer             | v1.2      | 4/4            | Complete    | 2026-10-14 |
-| 13. Reconciler — Async Enrichment    | v1.2      | 0/TBD          | Not started | -          |
+| 13. Reconciler — Async Enrichment    | v1.2      | 0/5            | Planned     | -          |
 | 12. Chat Bubble UI                   | v1.2      | 0/TBD          | Not started | -          |
 | 14. Voice Profiles                   | v1.2      | 0/TBD          | Not started | -          |
 

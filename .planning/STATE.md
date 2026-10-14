@@ -20,7 +20,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Точна транскрипція зустрічей з правильною атрибуцією спікерів.
-**Current focus:** Phase 13 planning (Reconciler on the Nemotron 3 timeline)
+**Current focus:** Phase 13 execution (Reconciler on the Nemotron 3 timeline)
 
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-03-22)
 Phase: 11.2 (true-streaming-asr) — COMPLETE
 Phase: 11.3 (dependency upgrade + Gemma 4 E4B) — COMPLETE 2026-10-13. Closed by owner decision with UAT 6/8 PASS; steps 5-6 (existing LLMs on the new MLX stack) were not run — residual risk recorded in `11.3-UAT.md`
 Phase: 11.4 (Nemotron 3 diarizer) — COMPLETE 2026-10-14. UAT PASS (owner). System audio is split into "Speaker N" by Nemotron 3 `fast32`; `DiarizerManager` removed
-Next: Phase 13 (Reconciler) — planning
+Next: Phase 13 (Reconciler) — PLANNED (5 plans), ready to execute 13-01, 13-02, 13-03 in parallel
 
 ### Resume 2026-10-13 (after pause since 2026-04-20)
 
