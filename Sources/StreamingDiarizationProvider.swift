@@ -1,12 +1,6 @@
 import Foundation
 import FluidAudio
 
-struct ClosedSpeakerBuffer: Sendable, Equatable {
-    let samples: [Float]
-    let speakerLabel: String
-    let startTime: TimeInterval
-}
-
 struct StreamingDiarizationChunk: Sendable {
     let probabilities: [Float]
     let frameCount: Int

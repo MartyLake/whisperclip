@@ -70,6 +70,22 @@ class ParakeetVoiceToTextModel: VoiceToTextProtocol {
         onEvent: @escaping @MainActor @Sendable (StreamingTranscriptionEvent) -> Void,
         onToken: @escaping @MainActor @Sendable (String) -> Void
     ) async throws -> String {
+        try await processStreamWithTimings(filepath: filepath, onEvent: onEvent, onToken: onToken).text
+    }
+
+    static func mapWordTimings(_ timings: [TokenTiming]?) -> [TimedWord]? {
+        guard let timings, !timings.isEmpty else { return nil }
+        let words = buildWordTimings(from: timings).map {
+            TimedWord(text: $0.word, start: $0.startTime, end: $0.endTime)
+        }
+        return words.isEmpty ? nil : words
+    }
+
+    func processStreamWithTimings(
+        filepath: String,
+        onEvent: @escaping @MainActor @Sendable (StreamingTranscriptionEvent) -> Void,
+        onToken: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> TimedTranscription {
         try await load()
 
         guard let manager = self.manager else {
@@ -107,7 +123,7 @@ class ParakeetVoiceToTextModel: VoiceToTextProtocol {
             onEvent(.finished)
         }
 
-        return transcription
+        return TimedTranscription(text: transcription, words: Self.mapWordTimings(result.tokenTimings))
     }
 
     func startStreamingSession(source: AudioSource) async throws {

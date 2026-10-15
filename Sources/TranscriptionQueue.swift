@@ -10,12 +10,11 @@ actor TranscriptionQueue {
         let source: AudioSource
         let samples: [Float]
         let startTime: TimeInterval
-        let processor: @MainActor (AudioSource, [Float], TimeInterval) async -> Void
+        let processor: @MainActor @Sendable (AudioSource, [Float], TimeInterval) async -> Void
     }
 
     private var isProcessing = false
-    private var pendingRequests: [(AudioSource, [Float], TimeInterval, @MainActor (AudioSource, [Float], TimeInterval) async -> Void)] = []
-    private var pendingBufferRequests: [(ClosedSpeakerBuffer, @MainActor (ClosedSpeakerBuffer) async -> Void)] = []
+    private var pendingRequests: [(AudioSource, [Float], TimeInterval, @MainActor @Sendable (AudioSource, [Float], TimeInterval) async -> Void)] = []
     private var micFragments: [FragmentRequest] = []
     private var systemFragments: [FragmentRequest] = []
     private var activeFragmentSource: AudioSource?
@@ -28,7 +27,7 @@ actor TranscriptionQueue {
         source: AudioSource,
         samples: [Float],
         startTime: TimeInterval,
-        processor: @escaping @MainActor (AudioSource, [Float], TimeInterval) async -> Void
+        processor: @escaping @MainActor @Sendable (AudioSource, [Float], TimeInterval) async -> Void
     ) async {
         if isProcessing {
             pendingRequests.append((source, samples, startTime, processor))
@@ -42,27 +41,24 @@ actor TranscriptionQueue {
         await processNext()
     }
 
-    func enqueue(
-        buffer: ClosedSpeakerBuffer,
-        processor: @escaping @MainActor (ClosedSpeakerBuffer) async -> Void
-    ) async {
-        if isProcessing {
-            pendingBufferRequests.append((buffer, processor))
-            return
-        }
-
+    /// Enqueue whole chunks without blocking the capture stream on inference.
+    func schedule(
+        source: AudioSource,
+        samples: [Float],
+        startTime: TimeInterval,
+        processor: @escaping @MainActor @Sendable (AudioSource, [Float], TimeInterval) async -> Void
+    ) {
+        pendingRequests.append((source, samples, startTime, processor))
+        guard !isProcessing else { return }
         isProcessing = true
-        await processor(buffer)
-        isProcessing = false
-
-        await processNext()
+        Task { await processNext() }
     }
 
     func enqueueFragment(
         source: AudioSource,
         samples: [Float],
         startTime: TimeInterval,
-        processor: @escaping @MainActor (AudioSource, [Float], TimeInterval) async -> Void
+        processor: @escaping @MainActor @Sendable (AudioSource, [Float], TimeInterval) async -> Void
     ) async -> Int {
         let sequence = (nextFragmentSequence[source] ?? 0) + 1
         nextFragmentSequence[source] = sequence
@@ -104,13 +100,7 @@ actor TranscriptionQueue {
             isProcessing = false
 
             await processNext()
-        } else if !pendingBufferRequests.isEmpty {
-            let (buffer, processor) = pendingBufferRequests.removeFirst()
-            isProcessing = true
-            await processor(buffer)
-            isProcessing = false
 
-            await processNext()
         }
     }
 
@@ -169,7 +159,6 @@ actor TranscriptionQueue {
     func drain() async {
         while isProcessing
             || !pendingRequests.isEmpty
-            || !pendingBufferRequests.isEmpty
             || !micFragments.isEmpty
             || !systemFragments.isEmpty {
             try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms

@@ -1,5 +1,16 @@
 import Foundation
 
+struct TimedWord: Sendable, Equatable {
+    let text: String
+    let start: TimeInterval
+    let end: TimeInterval
+}
+
+struct TimedTranscription: Sendable, Equatable {
+    let text: String
+    let words: [TimedWord]?
+}
+
 enum StreamingTranscriptionEvent: Sendable, Equatable {
     case convertingAudio
     case decodingStarted
@@ -28,6 +39,12 @@ protocol VoiceToTextProtocol {
         onEvent: @escaping @MainActor @Sendable (StreamingTranscriptionEvent) -> Void,
         onToken: @escaping @MainActor @Sendable (String) -> Void
     ) async throws -> String
+
+    func processStreamWithTimings(
+        filepath: String,
+        onEvent: @escaping @MainActor @Sendable (StreamingTranscriptionEvent) -> Void,
+        onToken: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> TimedTranscription
 
     func startStreamingSession(source: AudioSource) async throws
 
@@ -62,6 +79,15 @@ extension VoiceToTextProtocol {
             onEvent(.finished)
         }
         return result
+    }
+
+    func processStreamWithTimings(
+        filepath: String,
+        onEvent: @escaping @MainActor @Sendable (StreamingTranscriptionEvent) -> Void,
+        onToken: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> TimedTranscription {
+        let text = try await processStream(filepath: filepath, onEvent: onEvent, onToken: onToken)
+        return TimedTranscription(text: text, words: nil)
     }
 
     func startStreamingSession(source: AudioSource) async throws { }

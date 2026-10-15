@@ -27,7 +27,8 @@ class MeetingSession: ObservableObject {
     
     // MARK: - Dependencies
     
-    private let storage = MeetingStorage.shared
+    private lazy var storage = MeetingStorage.shared
+    private var segmentWriter: ((MeetingSegment, UUID) -> Void)?
     private let recorder = MeetingRecorder.shared
     private let detector = MeetingDetector.shared
     private let ai = MeetingAI.shared
@@ -68,6 +69,18 @@ class MeetingSession: ObservableObject {
         }
     }
     
+    /// A session with an injected persistence boundary for deterministic resolution tests.
+    init(meetingId: UUID, segmentWriter: @escaping (MeetingSegment, UUID) -> Void) {
+        self.segmentWriter = segmentWriter
+        currentMeetingId = meetingId
+        isActive = true
+    }
+
+    private func persistSegment(_ segment: MeetingSegment, to meetingId: UUID) {
+        if let segmentWriter { segmentWriter(segment, meetingId) }
+        else { storage.addSegment(segment, to: meetingId) }
+    }
+
     private func setupObservers() {
         // Listen for meeting app detection
         NotificationCenter.default.publisher(for: .meetingAppDetected)
@@ -124,13 +137,11 @@ class MeetingSession: ObservableObject {
             let capturedMeetingId = meeting.id
             try await recorder.startRecording(
                 onTranscript: { [weak self] segment in
-                    Task { @MainActor in
-                        guard let self = self else { return }
-                        if segment.isPending {
-                            self.addPendingSegment(segment)
-                        } else {
-                            self.handleNewSegment(segment, forMeetingId: capturedMeetingId)
-                        }
+                    guard let self else { return }
+                    if segment.isPending {
+                        self.addPendingSegment(segment)
+                    } else {
+                        self.handleNewSegment(segment, forMeetingId: capturedMeetingId)
                     }
                 },
                 onError: { [weak self] error in
@@ -263,21 +274,21 @@ class MeetingSession: ObservableObject {
         }
         
         // Add to storage - always save even if session is ending
-        storage.addSegment(segment, to: meetingId)
+        persistSegment(segment, to: meetingId)
         
-        Logger.log("New segment added to meeting \(meetingId): \(segment.text.prefix(50))...", log: Logger.general)
+        Logger.log("New segment added to meeting \(meetingId)", log: Logger.general)
     }
 
     // MARK: - Pending Segment API
 
     func addPendingSegment(_ segment: MeetingSegment) {
-        guard isActive else { return }
+        guard currentMeetingId != nil else { return }
         liveTranscript.append(segment)
         liveTranscript.sort { $0.startTime < $1.startTime }
     }
 
     func finalizeSegment(id: UUID, text: String, speaker: Speaker) {
-        guard let segment = liveTranscript.first(where: { $0.id == id }) else {
+        guard let segment = liveTranscript.first(where: { $0.id == id }), segment.isPending else {
             Logger.log("MeetingSession.finalizeSegment: segment \(id) not found in liveTranscript", log: Logger.general, type: .error)
             return
         }
@@ -290,7 +301,36 @@ class MeetingSession: ObservableObject {
         }
 
         if let meetingId = currentMeetingId {
-            storage.addSegment(segment, to: meetingId)
+            persistSegment(segment, to: meetingId)
+        }
+    }
+
+    /// Resolve before the first storage write. Repeated or stale resolutions are ignored.
+    func resolvePendingSegment(id: UUID, parts: [MeetingSegment]) {
+        guard let index = liveTranscript.firstIndex(where: { $0.id == id }),
+              liveTranscript[index].isPending, !parts.isEmpty else {
+            Logger.log("MeetingSession.resolvePendingSegment: missing or resolved row \(id)", log: Logger.general)
+            return
+        }
+        if parts.count == 1 {
+            let original = liveTranscript[index]
+            original.startTime = parts[0].startTime
+            original.endTime = parts[0].endTime
+            original.confidence = parts[0].confidence
+            finalizeSegment(id: id, text: parts[0].text, speaker: parts[0].speaker)
+            liveTranscript.sort { $0.startTime < $1.startTime }
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            for part in parts {
+                part.isPending = false
+                part.isAwaitingFinalPartial = false
+            }
+            liveTranscript.replaceSubrange(index...index, with: parts)
+            liveTranscript.sort { $0.startTime < $1.startTime }
+        }
+        if let meetingId = currentMeetingId {
+            for part in parts { persistSegment(part, to: meetingId) }
         }
     }
 
@@ -307,7 +347,7 @@ class MeetingSession: ObservableObject {
 
         if let meetingId = currentMeetingId {
             for segment in newSegments {
-                storage.addSegment(segment, to: meetingId)
+                persistSegment(segment, to: meetingId)
             }
         }
     }

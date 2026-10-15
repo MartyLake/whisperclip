@@ -6,7 +6,7 @@ import Observation
 /// - `.other`: legacy system-audio channel label (pre-diarization)
 /// - `.unknown`: unidentified speaker
 /// - `.labeled(String)`: a diarized speaker identified by the diarization model (e.g. "Speaker 1")
-enum Speaker: Codable, Hashable {
+enum Speaker: Codable, Hashable, Sendable {
     case me
     case other
     case unknown
@@ -113,8 +113,8 @@ final class MeetingSegment: Identifiable, Codable, Hashable {
     let id: UUID
     var speaker: Speaker
     var text: String
-    let startTime: TimeInterval
-    let endTime: TimeInterval
+    var startTime: TimeInterval
+    var endTime: TimeInterval
     var confidence: Float
     var isPending: Bool
     var isAwaitingFinalPartial: Bool

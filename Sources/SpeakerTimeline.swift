@@ -26,11 +26,13 @@ struct SpeakerTimeline: Sendable {
         }
     }
 
+    mutating func appendFrames(_ frames: [UInt8]) { self.frames.append(contentsOf: frames) }
+
     func label(forSlot slot: Int) -> String { "Speaker \(slot + 1)" }
 
     func dominantSpeaker(from start: Double, to end: Double) -> Int? {
-        let lower = max(0, Int((start / Self.frameSeconds).rounded(.down)))
-        let upper = min(frames.count, Int((end / Self.frameSeconds).rounded(.up)))
+        let lower = max(0, Int((start / Self.frameSeconds + 1e-8).rounded(.down)))
+        let upper = min(frames.count, Int((end / Self.frameSeconds - 1e-8).rounded(.up)))
         guard lower < upper else { return nil }
         var counts: [UInt8: Int] = [:]
         for frame in frames[lower..<upper] where frame > 0 { counts[frame, default: 0] += 1 }
@@ -39,8 +41,8 @@ struct SpeakerTimeline: Sendable {
     }
 
     func turns(from start: Double, to end: Double) -> [SpeakerTurn] {
-        let lower = max(0, Int((start / Self.frameSeconds).rounded(.down)))
-        let upper = min(frames.count, Int((end / Self.frameSeconds).rounded(.up)))
+        let lower = max(0, Int((start / Self.frameSeconds + 1e-8).rounded(.down)))
+        let upper = min(frames.count, Int((end / Self.frameSeconds - 1e-8).rounded(.up)))
         guard lower < upper else { return [] }
         var spans: [(slot: UInt8, start: Int, end: Int)] = []
         var runStart = lower

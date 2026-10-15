@@ -3,7 +3,7 @@ import AVFoundation
 import FluidAudio
 
 /// Callback types for meeting transcription
-typealias MeetingTranscriptCallback = (MeetingSegment) -> Void
+typealias MeetingTranscriptCallback = @MainActor (MeetingSegment) -> Void
 typealias MeetingErrorCallback = (Error) -> Void
 
 private struct SystemAudioBatch: Sendable {
@@ -17,6 +17,9 @@ private struct SystemAudioBatch: Sendable {
 class MeetingRecorder: NSObject, ObservableObject {
     static let shared = MeetingRecorder()
     
+    private weak var targetSession: MeetingSession?
+    private var session: MeetingSession { targetSession ?? MeetingSession.shared }
+
     // MARK: - Published Properties
     
     @Published private(set) var isRecording = false
@@ -35,12 +38,15 @@ class MeetingRecorder: NSObject, ObservableObject {
     private var dualCapture: DualChannelAudioCapture?
     private var voiceToText: VoiceToTextProtocol?
     private var speakerBufferManager: SpeakerBufferManager?
-    private var bufferConsumerTask: Task<Void, Never>?
+    private var reconciler: SpeakerReconciler?
+    private var reconcilerTask: Task<Void, Never>?
+    private var systemChunker = SystemAudioChunker(thresholdDB: -45)
+    private var systemVAD: VADStateMachine?
+    private var systemSpeechActive = false
+    private var recordingGeneration = UUID()
+    private let systemCaptureClock = CaptureClock()
     private var systemBatchContinuation: AsyncStream<SystemAudioBatch>.Continuation?
     private var systemBatchConsumerTask: Task<Void, Never>?
-    private var systemFallbackBuffer: [Float] = []
-    private var systemFallbackStartTime: TimeInterval = 0
-    private let systemFallbackChunkDuration: TimeInterval = 5.0
     private var micFragmentBuffer: [Float] = []
     private var micFragmentStartTime: TimeInterval = 0
     private var micPreRollBuffer: [Float] = []
@@ -102,6 +108,44 @@ class MeetingRecorder: NSObject, ObservableObject {
         super.init()
     }
     
+    /// Inject audio-independent dependencies to exercise the real system pipeline in tests.
+    init(voiceToText: VoiceToTextProtocol, session: MeetingSession,
+         speakerBufferManager: SpeakerBufferManager? = nil) {
+        super.init()
+        self.voiceToText = voiceToText
+        targetSession = session
+        transcriptCallback = { [weak session] in session?.addPendingSegment($0) }
+        self.speakerBufferManager = speakerBufferManager
+        speakerSeparationActive = speakerBufferManager != nil
+        isRecording = true
+        if let speakerBufferManager {
+            startReconciler(manager: speakerBufferManager, presetLatency: 3)
+        }
+    }
+
+    private func startReconciler(manager: SpeakerBufferManager, presetLatency: TimeInterval) {
+        let reconciler = SpeakerReconciler(
+            deadlineSeconds: SpeakerReconciler.deadlineSeconds(presetLatency: presetLatency),
+            clock: { [clock = systemCaptureClock] in clock.now })
+        self.reconciler = reconciler
+        reconcilerTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                guard let from = await reconciler.oldestQueuedStart else {
+                    do { try await Task.sleep(for: .milliseconds(250)) }
+                    catch { return }
+                    continue
+                }
+                let timeline = await manager.timelineView(from: from)
+                let resolutions = await reconciler.poll(timeline: timeline)
+                guard !Task.isCancelled else { return }
+                self.applyResolutions(resolutions)
+                do { try await Task.sleep(for: .milliseconds(250)) }
+                catch { return }
+            }
+        }
+    }
+
     // MARK: - Permission Check
     
     /// Check if system audio capture permission is available
@@ -133,8 +177,12 @@ class MeetingRecorder: NSObject, ObservableObject {
         pendingSystemSegmentId = nil
         segmentCount = 0
         lastError = nil
-        systemFallbackBuffer = []
-        systemFallbackStartTime = 0
+        systemChunker = SystemAudioChunker(thresholdDB: microphoneSilenceThresholdDB)
+        systemVAD = VADStateMachine(thresholdDB: microphoneSilenceThresholdDB,
+                                    onsetDuration: .milliseconds(100), offsetDuration: .milliseconds(400))
+        systemSpeechActive = false
+        systemCaptureClock.reset()
+        recordingGeneration = UUID()
         micFragmentBuffer = []
         micFragmentStartTime = 0
         micPreRollBuffer = []
@@ -185,13 +233,15 @@ class MeetingRecorder: NSObject, ObservableObject {
                 sampleRate: sampleRate,
                 pollingInterval: 150_000_000)
 
-            manager.onSpeechDetected = { [weak self] startTime, speakerLabel in
+            let generation = recordingGeneration
+            manager.onSpeechDetected = { [weak self] _, speakerLabel in
                 guard let self = self else { return }
                 Task { @MainActor in
+                    guard self.recordingGeneration == generation else { return }
                     if !self.activeSpeakers.contains(speakerLabel) {
                         self.activeSpeakers.append(speakerLabel)
                     }
-                    self.handleSystemSpeechDetected(startTime: startTime, speakerLabel: speakerLabel)
+                    self.activeSpeakerLabel = speakerLabel
                 }
             }
 
@@ -199,22 +249,12 @@ class MeetingRecorder: NSObject, ObservableObject {
             speakerSeparationActive = true
 
             await manager.start()
-            bufferConsumerTask = Task { [weak self] in
-                guard let self = self else { return }
-                for await buffer in manager.buffers {
-                    await MainActor.run {
-                        self.activeSpeakerLabel = buffer.speakerLabel
-                    }
-                    await self.transcriptionQueue.enqueue(buffer: buffer) { [weak self] buffered in
-                        await self?.transcribeClosedBuffer(buffered)
-                    }
-                }
-            }
+            startReconciler(manager: manager, presetLatency: preset.latencySeconds)
 
             Logger.log("Nemotron 3 speaker separation enabled", log: Logger.general)
         } catch {
             speakerBufferManager = nil
-            bufferConsumerTask = nil
+            reconciler = nil
             speakerSeparationActive = false
             // FluidAudio errors can contain model paths, so the detail is sensitive.
             let detail = GenericHelper.logSensitiveData() ? ": \(error)" : ""
@@ -232,15 +272,11 @@ class MeetingRecorder: NSObject, ObservableObject {
         let (systemBatchStream, systemBatchContinuation) = AsyncStream.makeStream(
             of: SystemAudioBatch.self, bufferingPolicy: .unbounded)
         self.systemBatchContinuation = systemBatchContinuation
+        let generation = recordingGeneration
         systemBatchConsumerTask = Task { @MainActor [weak self] in
             for await batch in systemBatchStream {
-                guard let self else { return }
-                self.activeSpeakerLabel = ""
-                if let manager = self.speakerBufferManager {
-                    await manager.onAudioBatch(batch.samples, atTime: batch.time)
-                } else {
-                    await self.accumulateSystemFallback(batch.samples, atTime: batch.time)
-                }
+                guard let self, self.recordingGeneration == generation else { continue }
+                await self.consumeSystemAudio(batch.samples, at: batch.time)
             }
         }
         
@@ -286,6 +322,9 @@ class MeetingRecorder: NSObject, ObservableObject {
             self.systemBatchContinuation = nil
             if let task = systemBatchConsumerTask { _ = await task.value }
             systemBatchConsumerTask = nil
+            reconcilerTask?.cancel()
+            if let manager = speakerBufferManager { await manager.stop() }
+            cleanup()
             throw MeetingRecorderError.recordingFailed
         }
         
@@ -330,32 +369,21 @@ class MeetingRecorder: NSObject, ObservableObject {
             systemBatchConsumerTask = nil
         }
 
-        // Flush the diarizer tail, then let its stream consumer process every buffer,
-        // including buffers yielded by finish().
+        if let tail = systemChunker.flush() { await enqueueSystemChunk(tail, isFinal: true) }
+        await transcriptionQueue.drain()
+        reconcilerTask?.cancel()
+        if let task = reconcilerTask { await task.value }
+        reconcilerTask = nil
         if let manager = speakerBufferManager {
             await manager.stop()
-            Logger.log("SpeakerBufferManager stopped", log: Logger.general)
+            if let reconciler {
+                let from = await reconciler.oldestQueuedStart ?? 0
+                let timeline = await manager.timelineView(from: from)
+                applyResolutions(await reconciler.flush(timeline: timeline))
+            }
         }
-        if let task = bufferConsumerTask {
-            _ = await task.value
-            bufferConsumerTask = nil
-        }
-
-        // Step 2b: Flush any remaining system fallback buffer (no-diarizer path)
-        if !systemFallbackBuffer.isEmpty {
-            let remainingChunk = systemFallbackBuffer
-            let remainingStart = systemFallbackStartTime
-            systemFallbackBuffer = []
-            systemFallbackStartTime = 0
-            await transcriptionQueue.enqueue(
-                source: .system,
-                samples: remainingChunk,
-                startTime: remainingStart,
-                processor: { [weak self] src, samp, start in
-                    await self?.processAudioChunk(source: src, samples: samp, startTime: start, isFinal: true)
-                }
-            )
-        }
+        if let id = pendingSystemSegmentId { self.session.removeSegment(id: id) }
+        pendingSystemSegmentId = nil
 
         // Finish microphone work only after both system streams have drained.
         let flushedMicSequence = await flushPendingMicFragmentBuffer()
@@ -419,13 +447,13 @@ class MeetingRecorder: NSObject, ObservableObject {
         let manager = speakerBufferManager
         let systemContinuation = systemBatchContinuation
         let systemConsumer = systemBatchConsumerTask
-        let bufferConsumer = bufferConsumerTask
+        reconcilerTask?.cancel()
+        recordingGeneration = UUID()
         Task { @MainActor in
             if let capture { _ = await capture.stopCapture() }
             systemContinuation?.finish()
             if let systemConsumer { _ = await systemConsumer.value }
             if let manager { await manager.stop() }
-            if let bufferConsumer { _ = await bufferConsumer.value }
         }
         isRecording = false
         cleanup()
@@ -455,10 +483,15 @@ class MeetingRecorder: NSObject, ObservableObject {
         dualCapture = nil
         speakerBufferManager = nil
         speakerSeparationActive = false
-        bufferConsumerTask = nil
+        reconcilerTask?.cancel()
+        reconcilerTask = nil
+        reconciler = nil
+        systemVAD = nil
         activeSpeakerLabel = ""
-        systemFallbackBuffer = []
-        systemFallbackStartTime = 0
+        systemChunker = SystemAudioChunker(thresholdDB: microphoneSilenceThresholdDB)
+        systemSpeechActive = false
+        systemCaptureClock.reset()
+        recordingGeneration = UUID()
         micFragmentBuffer = []
         micFragmentStartTime = 0
         micPreRollBuffer = []
@@ -491,34 +524,72 @@ class MeetingRecorder: NSObject, ObservableObject {
     
     // MARK: - Audio Processing
 
-    /// Accumulates system audio samples when no diarizer is available.
-    /// Dispatches fixed 5s chunks through the transcription queue as `.system`.
-    private func accumulateSystemFallback(_ samples: [Float], atTime time: TimeInterval) async {
-        if systemFallbackBuffer.isEmpty {
-            systemFallbackStartTime = time
+    func consumeSystemAudio(_ samples: [Float], at captureTime: TimeInterval) async {
+        let generation = recordingGeneration
+        systemCaptureClock.observe(captureTime: captureTime)
+        await handleSystemBatchVAD(SystemAudioBatch(samples: samples, time: captureTime))
+        guard generation == recordingGeneration else { return }
+        if let manager = speakerBufferManager { await manager.onAudioBatch(samples, atTime: captureTime) }
+        guard generation == recordingGeneration else { return }
+        let chunks = systemChunker.append(samples, at: captureTime)
+        for chunk in chunks { await enqueueSystemChunk(chunk) }
+    }
+
+    private func enqueueSystemChunk(_ chunk: SystemAudioChunk, isFinal: Bool = false) async {
+        let end = chunk.startTime + Double(chunk.samples.count) / Double(sampleRate)
+        var id: UUID?
+        if let pending = pendingSystemSegmentId,
+           let segment = self.session.liveTranscript.first(where: { $0.id == pending }),
+           segment.startTime <= end {
+            id = pending
+            pendingSystemSegmentId = nil
+            ghostSystemCleanupTask?.cancel()
         }
+        if id == nil {
+            id = createPendingSegment(speaker: speakerSeparationActive ? .pending : .other,
+                                      startTime: chunk.startTime).id
+        }
+        let segmentID = id
+        let generation = recordingGeneration
+        await transcriptionQueue.schedule(source: .system, samples: chunk.samples, startTime: chunk.startTime) {
+            [weak self] source, samples, time in
+            guard let self, self.recordingGeneration == generation else { return }
+            await self.processAudioChunk(source: source, samples: samples, startTime: time,
+                                         isFinal: isFinal || samples.count < self.sampleRate, systemSegmentID: segmentID)
+        }
+    }
 
-        systemFallbackBuffer.append(contentsOf: samples)
+    private func handleSystemBatchVAD(_ batch: SystemAudioBatch) async {
+        guard let systemVAD else { return }
+        let generation = recordingGeneration
+        let event = await systemVAD.update(levelDB: VADStateMachine.rmsDB(samples: batch.samples))
+        guard generation == recordingGeneration else { return }
+        if event == .startSpeech { systemSpeechActive = true }
+        if event == .endSpeech {
+            systemSpeechActive = false
+            startGhostCleanupTask(channel: .system)
+        }
+        if systemSpeechActive && pendingSystemSegmentId == nil {
+            handleSystemSpeechDetected(startTime: batch.time, speakerLabel: "Pending")
+        }
+    }
 
-        let chunkSampleCount = Int(Double(sampleRate) * systemFallbackChunkDuration)
-        while systemFallbackBuffer.count >= chunkSampleCount {
-            let chunk = Array(systemFallbackBuffer.prefix(chunkSampleCount))
-            let chunkStart = systemFallbackStartTime
-            systemFallbackBuffer.removeFirst(chunkSampleCount)
-            if systemFallbackBuffer.isEmpty {
-                systemFallbackStartTime = 0
-            } else {
-                systemFallbackStartTime += Double(chunkSampleCount) / Double(sampleRate)
-            }
-
-            await transcriptionQueue.enqueue(
-                source: .system,
-                samples: chunk,
-                startTime: chunkStart,
-                processor: { [weak self] src, samp, start in
-                    await self?.processAudioChunk(source: src, samples: samp, startTime: start)
+    private func applyResolutions(_ resolutions: [ReconcilerResolution]) {
+        for resolution in resolutions {
+            switch resolution {
+            case .label(let id, let speaker):
+                guard let segment = self.session.liveTranscript.first(where: { $0.id == id }) else { continue }
+                let part = MeetingSegment(speaker: speaker, text: segment.text, startTime: segment.startTime,
+                                          endTime: segment.endTime, confidence: 0.95)
+                self.session.resolvePendingSegment(id: id, parts: [part])
+            case .split(let id, let parts):
+                let segments = parts.map {
+                    MeetingSegment(speaker: $0.speaker, text: $0.text, startTime: $0.start,
+                                   endTime: $0.end, confidence: 0.95)
                 }
-            )
+                self.session.resolvePendingSegment(id: id, parts: segments)
+                segmentCount += max(0, parts.count - 1)
+            }
         }
     }
 
@@ -608,7 +679,7 @@ class MeetingRecorder: NSObject, ObservableObject {
                             log: Logger.general
                         )
                         if let id = targetSegmentID,
-                           let segment = MeetingSession.shared.liveTranscript.first(where: { $0.id == id }),
+                           let segment = self.session.liveTranscript.first(where: { $0.id == id }),
                            segment.isPending {
                             let preferredPartialText = self.preferredLivePreviewText(
                                 currentText: segment.text,
@@ -694,13 +765,13 @@ class MeetingRecorder: NSObject, ObservableObject {
         )
     }
 
-    private func processAudioChunk(source: AudioSource, samples: [Float], startTime: TimeInterval, isFinal: Bool = false) async {
+    private func processAudioChunk(source: AudioSource, samples: [Float], startTime: TimeInterval, isFinal: Bool = false, systemSegmentID: UUID? = nil) async {
         guard let voiceToText = voiceToText else {
             Logger.log("processAudioChunk: voiceToText not available", log: Logger.general, type: .error)
             return
         }
 
-        guard isFinal || samples.count >= sampleRate * 2 else {
+        guard isFinal || samples.count >= sampleRate * (source == .system ? 1 : 2) else {
             Logger.log("processAudioChunk: not enough samples (\(samples.count))", log: Logger.general)
             return
         }
@@ -726,19 +797,15 @@ class MeetingRecorder: NSObject, ObservableObject {
         let pendingSegment: MeetingSegment
         if source == .microphone,
            let existingId = pendingMicSegmentId,
-           let existing = MeetingSession.shared.liveTranscript.first(where: { $0.id == existingId }) {
+           let existing = self.session.liveTranscript.first(where: { $0.id == existingId }) {
             pendingSegment = existing
             pendingMicSegmentId = nil
             ghostMicCleanupTask?.cancel()
             ghostMicCleanupTask = nil
         } else if source == .system,
-                  let existingId = pendingSystemSegmentId,
-                  let existing = MeetingSession.shared.liveTranscript.first(where: { $0.id == existingId }),
-                  abs(existing.startTime - startTime) < 6.0 {
+                  let existingId = systemSegmentID,
+                  let existing = self.session.liveTranscript.first(where: { $0.id == existingId }) {
             pendingSegment = existing
-            pendingSystemSegmentId = nil
-            ghostSystemCleanupTask?.cancel()
-            ghostSystemCleanupTask = nil
         } else {
             pendingSegment = MeetingSegment(
                 speaker: source.speaker,
@@ -751,6 +818,11 @@ class MeetingRecorder: NSObject, ObservableObject {
             segmentCount += 1
             transcriptCallback?(pendingSegment)
         }
+        if source == .system {
+            pendingSegment.startTime = startTime
+            pendingSegment.endTime = endTime
+        }
+        let generation = recordingGeneration
         let pendingCreatedAt = ContinuousClock.now
 
         // Create temp WAV file for transcription
@@ -765,7 +837,7 @@ class MeetingRecorder: NSObject, ObservableObject {
             // Write samples to WAV file
             try writeWAVFile(samples: samples, to: tempURL)
 
-            let transcriptionText = try await voiceToText.processStream(
+            let timedTranscription = try await voiceToText.processStreamWithTimings(
                 filepath: tempURL.path,
                 onEvent: { [weak self, weak pendingSegment] event in
                     self?.handleStreamingEvent(
@@ -778,21 +850,30 @@ class MeetingRecorder: NSObject, ObservableObject {
                 pendingSegment?.text = partialText
             }
 
-            let normalizedText = transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard generation == recordingGeneration else { return }
+            let normalizedText = timedTranscription.text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !normalizedText.isEmpty else {
                 Logger.log("processAudioChunk: empty transcription from \(sourceName)", log: Logger.general)
-                MeetingSession.shared.replaceSegment(id: pendingSegment.id, with: [])
+                self.session.replaceSegment(id: pendingSegment.id, with: [])
                 return
             }
 
             if source == .microphone && isFinal && shouldDropDuplicateFinalMicSegment(text: normalizedText, startTime: startTime) {
-                Logger.log("processAudioChunk: dropping duplicate final mic segment '\(normalizedText.prefix(50))'", log: Logger.general)
-                MeetingSession.shared.replaceSegment(id: pendingSegment.id, with: [])
+                Logger.log("processAudioChunk: dropping duplicate final mic segment", log: Logger.general)
+                self.session.replaceSegment(id: pendingSegment.id, with: [])
                 return
             }
 
-            // Determine speaker using the capture source. Diarized system audio is handled
-            // upstream by SpeakerBufferManager and transcribeClosedBuffer(_:).
+            if source == .system, let reconciler {
+                pendingSegment.text = normalizedText
+                pendingSegment.speaker = .pending
+                let words = timedTranscription.words?.map {
+                    ReconcilerWord(text: $0.text, start: startTime + $0.start, end: startTime + $0.end)
+                }
+                await reconciler.submit(ReconcilerRow(id: pendingSegment.id, start: startTime,
+                                                       end: endTime, text: normalizedText, words: words))
+                return
+            }
             let speaker = source.speaker
 
             await ensureMinimumPendingVisibility(
@@ -802,129 +883,22 @@ class MeetingRecorder: NSObject, ObservableObject {
                     : minimumSystemPendingVisibilityNanoseconds
             )
             pendingSegment.confidence = 0.95
-            MeetingSession.shared.finalizeSegment(
+            self.session.finalizeSegment(
                 id: pendingSegment.id,
                 text: normalizedText,
                 speaker: speaker
             )
 
-            Logger.log("processAudioChunk: created \(speaker.displayName) segment #\(segmentCount): '\(normalizedText.prefix(50))'", log: Logger.general)
+            Logger.log("processAudioChunk: created \(speaker.displayName) segment #\(segmentCount)", log: Logger.general)
         } catch {
+            guard generation == recordingGeneration else { return }
             pendingSegment.confidence = 0
-            MeetingSession.shared.finalizeSegment(
+            self.session.finalizeSegment(
                 id: pendingSegment.id,
                 text: "[transcription failed]",
                 speaker: source.speaker
             )
-            Logger.log("processAudioChunk: error processing \(sourceName): \(error)", log: Logger.general, type: .error)
-            lastError = error.localizedDescription
-        }
-    }
-
-    private func transcribeClosedBuffer(_ buffer: ClosedSpeakerBuffer) async {
-        guard let voiceToText = voiceToText else {
-            Logger.log("transcribeClosedBuffer: voiceToText not available", log: Logger.general, type: .error)
-            return
-        }
-
-        let sourceName = "system[\(buffer.speakerLabel)]"
-
-        Logger.log(
-            "transcribeClosedBuffer: processing \(sourceName) with \(buffer.samples.count) samples",
-            log: Logger.general
-        )
-
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("meeting_\(sourceName)_\(UUID().uuidString).wav")
-
-        defer {
-            try? FileManager.default.removeItem(at: tempURL)
-        }
-
-        let chunkDuration = Double(buffer.samples.count) / Double(sampleRate)
-        let startTime = buffer.startTime
-        let endTime = startTime + chunkDuration
-        let speaker = Speaker(displayName: buffer.speakerLabel)
-        let pendingSegment: MeetingSegment
-        if let existingId = pendingSystemSegmentId,
-           let existing = MeetingSession.shared.liveTranscript.first(where: { $0.id == existingId }),
-           abs(existing.startTime - startTime) < 6.0 {
-            pendingSegment = existing
-            pendingSystemSegmentId = nil
-            ghostSystemCleanupTask?.cancel()
-            ghostSystemCleanupTask = nil
-        } else {
-            pendingSegment = MeetingSegment(
-                speaker: speaker,
-                text: "",
-                startTime: startTime,
-                endTime: endTime,
-                confidence: 0,
-                isPending: true
-            )
-            segmentCount += 1
-            transcriptCallback?(pendingSegment)
-        }
-        let pendingCreatedAt = ContinuousClock.now
-
-        do {
-            if shouldDumpParakeetDebugAudio(),
-               voiceToText is ParakeetVoiceToTextModel {
-                _ = dumpParakeetDebugAudio(
-                    samples: buffer.samples,
-                    channel: "system",
-                    segmentID: pendingSegment.id,
-                    startTime: startTime
-                )
-            }
-            try writeWAVFile(samples: buffer.samples, to: tempURL)
-            let transcriptionText = try await voiceToText.processStream(
-                filepath: tempURL.path,
-                onEvent: { [weak self, weak pendingSegment] event in
-                    self?.handleStreamingEvent(
-                        event,
-                        for: sourceName,
-                        segment: pendingSegment
-                    )
-                }
-            ) { [weak pendingSegment] partialText in
-                pendingSegment?.text = partialText
-            }
-
-            let normalizedText = transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !normalizedText.isEmpty else {
-                Logger.log("transcribeClosedBuffer: empty transcription from \(sourceName)", log: Logger.general)
-                MeetingSession.shared.replaceSegment(id: pendingSegment.id, with: [])
-                return
-            }
-
-            await ensureMinimumPendingVisibility(
-                since: pendingCreatedAt,
-                minimumNanoseconds: minimumSystemPendingVisibilityNanoseconds
-            )
-            pendingSegment.confidence = 0.95
-            MeetingSession.shared.finalizeSegment(
-                id: pendingSegment.id,
-                text: normalizedText,
-                speaker: speaker
-            )
-
-            Logger.log(
-                "transcribeClosedBuffer: created \(buffer.speakerLabel) segment #\(segmentCount): '\(normalizedText.prefix(50))'",
-                log: Logger.general
-            )
-        } catch {
-            pendingSegment.confidence = 0
-            MeetingSession.shared.finalizeSegment(
-                id: pendingSegment.id,
-                text: "[transcription failed]",
-                speaker: speaker
-            )
-            Logger.log(
-                "transcribeClosedBuffer: error processing \(sourceName): \(error)",
-                log: Logger.general,
-                type: .error
-            )
+            Logger.log("processAudioChunk: error processing \(sourceName)" + (GenericHelper.logSensitiveData() ? ": \(error)" : ""), log: Logger.general, type: .error)
             lastError = error.localizedDescription
         }
     }
@@ -954,7 +928,7 @@ class MeetingRecorder: NSObject, ObservableObject {
         let normalizedCandidate = normalizedTranscriptText(text)
         guard !normalizedCandidate.isEmpty else { return false }
 
-        guard let lastFinalMicSegment = MeetingSession.shared.liveTranscript
+        guard let lastFinalMicSegment = self.session.liveTranscript
             .reversed()
             .first(where: { !$0.isPending && $0.speaker == .me }) else {
             return false
@@ -1050,7 +1024,7 @@ class MeetingRecorder: NSObject, ObservableObject {
                     flushedSequence ?? 0
                 )
                 let finalUtteranceSamples = self.micUtteranceSamplesBySegment[endingSegmentID] ?? []
-                let segmentStartTime = MeetingSession.shared.liveTranscript
+                let segmentStartTime = self.session.liveTranscript
                     .first(where: { $0.id == endingSegmentID })?
                     .startTime ?? 0
                 if self.shouldDumpParakeetDebugAudio(),
@@ -1109,7 +1083,7 @@ class MeetingRecorder: NSObject, ObservableObject {
                     }
                 }
                 await MainActor.run {
-                    MeetingSession.shared.markSegmentAwaitingFinalPartial(id: endingSegmentID, isAwaiting: true)
+                    self.session.markSegmentAwaitingFinalPartial(id: endingSegmentID, isAwaiting: true)
                 }
                 try? await Task.sleep(nanoseconds: self.micFinalPartialGraceNanoseconds)
                 Logger.log(
@@ -1138,7 +1112,7 @@ class MeetingRecorder: NSObject, ObservableObject {
     private func handleSystemSpeechDetected(startTime: TimeInterval, speakerLabel: String) {
         guard pendingSystemSegmentId == nil else { return }
 
-        let speaker = Speaker(displayName: speakerLabel)
+        let speaker: Speaker = speakerSeparationActive ? .pending : .other
         let segment = createPendingSegment(speaker: speaker, startTime: startTime)
         pendingSystemSegmentId = segment.id
         Logger.log(
@@ -1189,19 +1163,19 @@ class MeetingRecorder: NSObject, ObservableObject {
         case .mic:
             guard let id = pendingMicSegmentId else { return }
             guard id == expectedSegmentID else { return }
-            if let segment = MeetingSession.shared.liveTranscript.first(where: { $0.id == id }),
+            if let segment = self.session.liveTranscript.first(where: { $0.id == id }),
                segment.text.isEmpty {
                 Logger.log("VAD mic: removing ghost segment \(id)", log: Logger.general)
-                MeetingSession.shared.removeSegment(id: id)
+                self.session.removeSegment(id: id)
             }
             pendingMicSegmentId = nil
         case .system:
             guard let id = pendingSystemSegmentId else { return }
             guard id == expectedSegmentID else { return }
-            if let segment = MeetingSession.shared.liveTranscript.first(where: { $0.id == id }),
+            if let segment = self.session.liveTranscript.first(where: { $0.id == id }),
                segment.text.isEmpty {
                 Logger.log("VAD system: removing ghost segment \(id)", log: Logger.general)
-                MeetingSession.shared.removeSegment(id: id)
+                self.session.removeSegment(id: id)
             }
             pendingSystemSegmentId = nil
         }
@@ -1233,7 +1207,7 @@ class MeetingRecorder: NSObject, ObservableObject {
             pendingMicSegmentId = nil
         }
 
-        guard let segment = MeetingSession.shared.liveTranscript.first(where: { $0.id == id }) else {
+        guard let segment = self.session.liveTranscript.first(where: { $0.id == id }) else {
             micPreviewTasks[id]?.cancel()
             micPreviewTasks[id] = nil
             micBestStreamingTextBySegment[id] = nil
@@ -1271,7 +1245,7 @@ class MeetingRecorder: NSObject, ObservableObject {
             micLastPreviewSampleCountBySegment[id] = nil
             segment.isAwaitingFinalPartial = false
             Logger.log("VAD mic: removing empty pending segment \(id) \(reason)", log: Logger.general)
-            MeetingSession.shared.removeSegment(id: id)
+            self.session.removeSegment(id: id)
             return
         }
 
@@ -1285,7 +1259,7 @@ class MeetingRecorder: NSObject, ObservableObject {
         micLastPreviewSampleCountBySegment[id] = nil
         segment.confidence = 0.95
         segment.isAwaitingFinalPartial = false
-        MeetingSession.shared.finalizeSegment(
+        self.session.finalizeSegment(
             id: id,
             text: normalizedText,
             speaker: .me
@@ -1525,7 +1499,7 @@ class MeetingRecorder: NSObject, ObservableObject {
         let currentBest = micBestStreamingTextBySegment[segmentID]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard currentBest.isEmpty else { return }
 
-        guard let segment = MeetingSession.shared.liveTranscript.first(where: { $0.id == segmentID }),
+        guard let segment = self.session.liveTranscript.first(where: { $0.id == segmentID }),
               segment.isPending else {
             return
         }
@@ -1553,7 +1527,7 @@ class MeetingRecorder: NSObject, ObservableObject {
 
                 await MainActor.run {
                     guard self.pendingMicSegmentId == segmentID,
-                          let segment = MeetingSession.shared.liveTranscript.first(where: { $0.id == segmentID }),
+                          let segment = self.session.liveTranscript.first(where: { $0.id == segmentID }),
                           segment.isPending else {
                         return
                     }
