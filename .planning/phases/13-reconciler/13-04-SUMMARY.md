@@ -19,3 +19,11 @@ UAT remains required for real-model label stability, latency, timing quality, sa
 - `swift test --parallel`: 105 tests passed (arm64, 2026-10-15).
 - `./local_build.sh Debug`: succeeded. Repository-wide concurrency and fixture warnings remain; this is not a warning-free build.
 - No model downloads or network-backed inference were used in tests.
+
+## Follow-up: callback jitter (2026-10-15)
+
+Owner reported fragmented bubbles and repeated transcription failures. Source inspection confirmed the chunker treated callback lateness above half a sample as a capture gap. `5c80e5a` adds a sample-count clock shared by recorder consumers; only a forward gap greater than 400 ms reanchors it. This also prevents tiny jitter gaps from being zero-padded into the diarizer timeline.
+
+Tails under 300 ms are discarded before creating a row. Tails of 300 ms to 1 s are padded to 1 s only in the WAV input; transcript time bounds retain the captured duration. FluidAudio's actual minimum is 0.3 s (`Shared/ASRConstants.swift`), not 1 s.
+
+Verification: 109 tests passed; Debug app build succeeded. Regressions cover ±millisecond callback jitter, a real gap, exact diarizer sample count, one phrase-level ASR request, padded WAV input, and no ASR/failure row for tiny tails. Live confirmation remains pending.

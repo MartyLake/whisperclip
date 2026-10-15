@@ -17,3 +17,7 @@ Build and launch with `./local_run.sh Debug`. Select Parakeet, use an installed 
 | 9 | Without Nemotron: source-based Other rows | Pending |
 
 Record actual observations per step; report failing steps or approval. Removing a model for step 9 is a manual action and was not performed automatically.
+
+## Jitter fix awaiting live recheck
+
+The owner reported fragmented bubbles and repeated `[transcription failed]` rows. Source-level diagnosis confirmed an overly strict capture-gap threshold. Fixed in `5c80e5a`; automated tests (109) and Debug build pass. Repeat steps 2, 4, 6 and 7 with real system audio to confirm phrase-level chunks and absence of invalid-short-audio failures. No live success is claimed yet.

@@ -35,3 +35,5 @@ created: 2026-10-14
 - No network in tests; no model downloads.
 
 Automated result (2026-10-15): 105 tests passed; Debug app build succeeded. Existing repository-wide warnings remain. Manual Plan 05 is pending; see `13-UAT.md`.
+
+Jitter follow-up (2026-10-15): 109 tests passed and Debug build succeeded after adding sample-clock and short-tail regressions. Live UAT remains pending.
