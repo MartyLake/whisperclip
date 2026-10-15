@@ -96,3 +96,7 @@ enum STTEngine: String, CaseIterable {
         }
     }
 }
+
+// CAM++ placeholders; calibrate with real call audio in Phase 14 Plan 06.
+let Voice_Match_Threshold: Float = 0.5
+let Voice_Match_Margin: Float = 0.05

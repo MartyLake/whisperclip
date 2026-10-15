@@ -28,6 +28,7 @@ class MeetingSession: ObservableObject {
     // MARK: - Dependencies
     
     private lazy var storage = MeetingStorage.shared
+    private lazy var voiceProfiles = VoiceProfileStore.shared
     private var segmentWriter: ((MeetingSegment, UUID) -> Void)?
     private let recorder = MeetingRecorder.shared
     private let detector = MeetingDetector.shared
@@ -37,6 +38,7 @@ class MeetingSession: ObservableObject {
     
     private var cancellables = Set<AnyCancellable>()
     private var autoSaveTimer: Timer?
+    private(set) var speakerNames: [Int: String] = [:]
     
     // MARK: - Status
     
@@ -74,6 +76,13 @@ class MeetingSession: ObservableObject {
         self.segmentWriter = segmentWriter
         currentMeetingId = meetingId
         isActive = true
+    }
+
+    init(storage: MeetingStorage, voiceProfiles: VoiceProfileStore, meetingID: UUID? = nil) {
+        self.storage = storage
+        self.voiceProfiles = voiceProfiles
+        currentMeetingId = meetingID
+        isActive = meetingID != nil
     }
 
     private func persistSegment(_ segment: MeetingSegment, to meetingId: UUID) {
@@ -125,6 +134,7 @@ class MeetingSession: ObservableObject {
         status = .starting
         errorMessage = nil
         liveTranscript = []
+        speakerNames = [:]
         
         do {
             // Create meeting in storage
@@ -277,6 +287,90 @@ class MeetingSession: ObservableObject {
         persistSegment(segment, to: meetingId)
         
         Logger.log("New segment added to meeting \(meetingId)", log: Logger.general)
+    }
+
+    func displaySpeaker(_ speaker: Speaker) -> Speaker {
+        guard case .labeled(let label) = speaker, label.hasPrefix("Speaker "),
+              let number = Int(label.dropFirst(8)), let name = speakerNames[number - 1] else { return speaker }
+        return .labeled(name)
+    }
+
+    func relabelSpeaker(slot: Int, to name: String) {
+        let old = speakerNames[slot] ?? "Speaker \(slot + 1)"
+        guard old != name else { return }
+        speakerNames[slot] = name
+        for row in liveTranscript where !row.isPending && row.speaker == .labeled(old) { row.speaker = .labeled(name) }
+        if let id = currentMeetingId, var meeting = storage.getMeeting(id) {
+            for row in meeting.segments where row.speaker == .labeled(old) { row.speaker = .labeled(name) }
+            for index in meeting.voices.indices where meeting.voices[index].slot == slot { meeting.voices[index].label = name }
+            storage.update(meeting)
+        }
+    }
+
+    func updateVoices(_ voices: [MeetingVoice]) {
+        guard let id = currentMeetingId, var meeting = storage.getMeeting(id) else { return }
+        var voices = voices
+        for index in voices.indices {
+            if let name = speakerNames[voices[index].slot] { voices[index].label = name }
+            var visited = Set<UUID>()
+            while let id = voices[index].profileID, visited.insert(id).inserted,
+                  let target = voiceProfiles.mergedProfileIDs[id] { voices[index].profileID = target }
+            if voiceProfiles.lastErasedAt.map({ meeting.startedAt <= $0 }) == true
+                || voices[index].profileID.map({ voiceProfiles.deletedProfileIDs.contains($0) }) == true {
+                voices[index].embedding = nil
+                voices[index].profileID = nil
+            }
+        }
+        guard meeting.voices != voices else { return }
+        meeting.voices = voices
+        storage.update(meeting)
+    }
+
+    func renameSpeaker(meetingID: UUID, currentLabel: String, to name: String) async throws -> String {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, currentLabel != "Me", name.caseInsensitiveCompare("Me") != .orderedSame,
+              var meeting = storage.getMeeting(meetingID) else { return "Enter a speaker name." }
+        let live = currentMeetingId == meetingID
+        if live, let tracker = recorder.voiceTracker {
+            updateVoices(await tracker.snapshot())
+            meeting = storage.getMeeting(meetingID) ?? meeting
+        }
+        let canonical = voiceProfiles.profile(named: name)?.name
+            ?? meeting.voices.first { $0.label.caseInsensitiveCompare(name) == .orderedSame }?.label ?? name
+        let indices = meeting.voices.indices.filter {
+            meeting.voices[$0].label == currentLabel || meeting.voices[$0].label.caseInsensitiveCompare(canonical) == .orderedSame
+        }
+        var saved = false
+        for index in indices {
+            var voice = meeting.voices[index]
+            if let vector = voice.embedding {
+                let profile = try voiceProfiles.addSample(vector, toProfileNamed: canonical)
+                voice.profileID = profile.id
+                saved = true
+            } else { voice.profileID = nil }
+            voice.label = canonical
+            meeting.voices[index] = voice
+            if live {
+                relabelSpeaker(slot: voice.slot, to: canonical)
+                await recorder.voiceTracker?.lock(slot: voice.slot, profileID: voice.profileID, name: canonical)
+            }
+        }
+        // Old meetings and unavailable models still support text-only naming.
+        if live && indices.isEmpty {
+            if currentLabel.hasPrefix("Speaker "), let number = Int(currentLabel.dropFirst(8)) {
+                relabelSpeaker(slot: number - 1, to: canonical)
+                await recorder.voiceTracker?.lock(slot: number - 1, profileID: nil, name: canonical)
+            }
+        }
+        for row in meeting.segments where row.speaker == .labeled(currentLabel) || row.speaker.displayName == currentLabel {
+            guard row.speaker != .me else { continue }
+            row.speaker = .labeled(canonical)
+        }
+        for row in liveTranscript where live && !row.isPending && row.speaker.displayName == currentLabel {
+            row.speaker = .labeled(canonical)
+        }
+        storage.update(meeting)
+        return saved ? "Voice saved" : "Not enough clean speech, or voice recognition unavailable. Name saved without voice."
     }
 
     // MARK: - Pending Segment API

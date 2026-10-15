@@ -440,7 +440,9 @@ struct MeetingDetailView: View {
                 speakerStatsView
                 
                 // Transcript
-                ChatTranscriptView(segments: currentMeeting.segments, selectable: true)
+                ChatTranscriptView(segments: currentMeeting.segments, selectable: true, renameHandler: { label, name in
+                    try await MeetingSession.shared.renameSpeaker(meetingID: currentMeeting.id, currentLabel: label, to: name)
+                })
             }
         }
     }

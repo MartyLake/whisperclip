@@ -40,6 +40,7 @@ class MeetingRecorder: NSObject, ObservableObject {
     private var speakerBufferManager: SpeakerBufferManager?
     private var reconciler: SpeakerReconciler?
     private var reconcilerTask: Task<Void, Never>?
+    private(set) var voiceTracker: VoiceIdentityTracker?
     private var systemChunker = SystemAudioChunker(thresholdDB: -45)
     private var systemVAD: VADStateMachine?
     private var systemSampleClock = SystemAudioSampleClock()
@@ -132,6 +133,16 @@ class MeetingRecorder: NSObject, ObservableObject {
         reconcilerTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
+                if let tracker = self.voiceTracker {
+                    await tracker.refreshProfiles(VoiceProfileStore.shared.vectors)
+                    let window = await manager.timelineView(from: max(0, self.systemCaptureClock.now - 28))
+                    let events = await tracker.update(timeline: window)
+                    guard !Task.isCancelled else { return }
+                    for event in events {
+                        if case .matched(let slot, _, let name, _) = event { self.session.relabelSpeaker(slot: slot, to: name) }
+                    }
+                    self.session.updateVoices(await tracker.snapshot())
+                }
                 guard let from = await reconciler.oldestQueuedStart else {
                     do { try await Task.sleep(for: .milliseconds(250)) }
                     catch { return }
@@ -250,6 +261,13 @@ class MeetingRecorder: NSObject, ObservableObject {
             speakerBufferManager = manager
             speakerSeparationActive = true
 
+            do {
+                let embedder = try await CampPlusSpeakerEmbedder.load()
+                voiceTracker = VoiceIdentityTracker(embedder: embedder, profiles: VoiceProfileStore.shared.vectors)
+            } catch {
+                Logger.log("CAM++ unavailable; voice identity disabled" + (GenericHelper.logSensitiveData() ? ": \(error)" : ""),
+                           log: Logger.general, type: .error)
+            }
             await manager.start()
             startReconciler(manager: manager, presetLatency: preset.latencySeconds)
 
@@ -384,6 +402,13 @@ class MeetingRecorder: NSObject, ObservableObject {
                 applyResolutions(await reconciler.flush(timeline: timeline))
             }
         }
+        if let tracker = voiceTracker, let manager = speakerBufferManager {
+            let events = await tracker.update(timeline: manager.timelineView(from: max(0, systemCaptureClock.now - 28)), final: true)
+            for event in events {
+                if case .matched(let slot, _, let name, _) = event { session.relabelSpeaker(slot: slot, to: name) }
+            }
+            session.updateVoices(await tracker.finish())
+        }
         if let id = pendingSystemSegmentId { self.session.removeSegment(id: id) }
         pendingSystemSegmentId = nil
 
@@ -484,6 +509,7 @@ class MeetingRecorder: NSObject, ObservableObject {
         voiceToText = nil
         dualCapture = nil
         speakerBufferManager = nil
+        voiceTracker = nil
         speakerSeparationActive = false
         reconcilerTask?.cancel()
         reconcilerTask = nil
@@ -532,6 +558,7 @@ class MeetingRecorder: NSObject, ObservableObject {
         guard !samples.isEmpty else { return }
         let alignedTime = systemSampleClock.advance(sampleCount: samples.count, sampleRate: sampleRate, at: captureTime).time
         systemCaptureClock.observe(captureTime: alignedTime)
+        if let tracker = voiceTracker { await tracker.appendAudio(samples, at: alignedTime) }
         await handleSystemBatchVAD(SystemAudioBatch(samples: samples, time: alignedTime))
         guard generation == recordingGeneration else { return }
         if let manager = speakerBufferManager { await manager.onAudioBatch(samples, atTime: alignedTime) }
@@ -595,12 +622,12 @@ class MeetingRecorder: NSObject, ObservableObject {
             switch resolution {
             case .label(let id, let speaker):
                 guard let segment = self.session.liveTranscript.first(where: { $0.id == id }) else { continue }
-                let part = MeetingSegment(speaker: speaker, text: segment.text, startTime: segment.startTime,
+                let part = MeetingSegment(speaker: session.displaySpeaker(speaker), text: segment.text, startTime: segment.startTime,
                                           endTime: segment.endTime, confidence: 0.95)
                 self.session.resolvePendingSegment(id: id, parts: [part])
             case .split(let id, let parts):
                 let segments = parts.map {
-                    MeetingSegment(speaker: $0.speaker, text: $0.text, startTime: $0.start,
+                    MeetingSegment(speaker: session.displaySpeaker($0.speaker), text: $0.text, startTime: $0.start,
                                    endTime: $0.end, confidence: 0.95)
                 }
                 self.session.resolvePendingSegment(id: id, parts: segments)

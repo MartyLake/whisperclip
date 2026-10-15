@@ -8,6 +8,7 @@ struct SettingsView: View {
             GeneralSettingsView(settings: settings)
             HotkeySettingsView(settings: settings)
             MeetingsSettingsView(settings: settings)
+            VoicesSettingsView()
             PromptsSettingsView(settings: settings)
         }
         .frame(minWidth: 500, minHeight: 400)

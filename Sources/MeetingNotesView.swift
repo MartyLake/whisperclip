@@ -136,7 +136,10 @@ struct MeetingNotesView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 12) {
-                        ChatTranscriptView(segments: session.liveTranscript, selectable: false)
+                        ChatTranscriptView(segments: session.liveTranscript, selectable: false, renameHandler: { label, name in
+                            guard let id = session.currentMeetingId else { return "Meeting ended." }
+                            return try await session.renameSpeaker(meetingID: id, currentLabel: label, to: name)
+                        })
                         
                         if session.liveTranscript.isEmpty {
                             VStack(spacing: 12) {

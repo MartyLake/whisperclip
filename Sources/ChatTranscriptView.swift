@@ -5,12 +5,13 @@ import SwiftUI
 struct ChatTranscriptView: View {
     let segments: [MeetingSegment]
     let selectable: Bool
+    var renameHandler: ((String, String) async throws -> String)? = nil
 
     var body: some View {
         let groups = TranscriptGrouping.groups(from: segments)
         VStack(alignment: .leading, spacing: 12) {
             ForEach(groups) { group in
-                TranscriptGroupBubble(group: group, selectable: selectable)
+                TranscriptGroupBubble(group: group, selectable: selectable, renameHandler: renameHandler)
             }
         }
     }
@@ -19,6 +20,10 @@ struct ChatTranscriptView: View {
 struct TranscriptGroupBubble: View {
     let group: TranscriptGroup
     let selectable: Bool
+    var renameHandler: ((String, String) async throws -> String)? = nil
+
+    @State private var renaming = false
+    @State private var hovering = false
 
     private var speakerColor: Color {
         group.isPendingSpeaker ? .gray : speakerPaletteColor(group.speaker)
@@ -40,9 +45,27 @@ struct TranscriptGroupBubble: View {
         HStack {
             if group.isMe { Spacer(minLength: 48) }
             VStack(alignment: group.isMe ? .trailing : .leading, spacing: 4) {
-                Text(group.isPendingSpeaker ? "…" : group.speaker.displayName)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(speakerColor)
+                if !group.isMe && !group.isPendingSpeaker, let renameHandler {
+                    Button { renaming = true } label: {
+                        HStack(spacing: 4) {
+                            Text(group.speaker.displayName)
+                            if hovering { Image(systemName: "pencil") }
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(speakerColor)
+                    }
+                    .buttonStyle(.plain)
+                    .onHover { hovering = $0 }
+                    .popover(isPresented: $renaming) {
+                        SpeakerRenamePopover(currentName: group.speaker.displayName) { name in
+                            try await renameHandler(group.speaker.displayName, name)
+                        }
+                    }
+                } else {
+                    Text(group.isPendingSpeaker ? "…" : group.speaker.displayName)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(speakerColor)
+                }
                 VStack(alignment: .leading, spacing: 6) {
                     let text = attributedText
                     if !text.characters.isEmpty {

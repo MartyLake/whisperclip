@@ -384,6 +384,14 @@ enum MeetingSource: String, Codable, CaseIterable {
     }
 }
 
+struct MeetingVoice: Codable, Hashable, Sendable {
+    let slot: Int
+    var label: String
+    var embedding: [Float]?
+    var speechSeconds: Double
+    var profileID: UUID?
+}
+
 /// Full meeting note document
 struct MeetingNote: Identifiable, Codable, Hashable {
     let id: UUID
@@ -403,6 +411,31 @@ struct MeetingNote: Identifiable, Codable, Hashable {
     var qaHistory: [MeetingQA]
     var isFavorite: Bool
     var tags: [String]
+    var voices: [MeetingVoice] = []
+
+    func voice(forLabel label: String) -> MeetingVoice? {
+        voices.first { $0.label == label }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, source, status, startedAt, endedAt, segments, summary, qaHistory, isFavorite, tags, voices
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        source = try c.decode(MeetingSource.self, forKey: .source)
+        status = try c.decode(MeetingStatus.self, forKey: .status)
+        startedAt = try c.decode(Date.self, forKey: .startedAt)
+        endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+        segments = try c.decode([MeetingSegment].self, forKey: .segments)
+        summary = try c.decode(MeetingSummary.self, forKey: .summary)
+        qaHistory = try c.decode([MeetingQA].self, forKey: .qaHistory)
+        isFavorite = try c.decode(Bool.self, forKey: .isFavorite)
+        tags = try c.decode([String].self, forKey: .tags)
+        voices = try c.decodeIfPresent([MeetingVoice].self, forKey: .voices) ?? []
+    }
     
     init(title: String = "New Meeting", source: MeetingSource = .manual) {
         self.id = UUID()
