@@ -1,7 +1,7 @@
 ---
 phase: 15
 slug: shared-model-storage
-status: planned
+status: in_progress
 created: 2026-10-15
 ---
 
@@ -21,10 +21,10 @@ created: 2026-10-15
 
 | Task | Wave | Requirement | Type | Command | Status |
 |------|------|-------------|------|---------|--------|
-| 01 T1 | 1 | MODELS-01, MODELS-02 | Unit (TDD) | `swift test --filter SharedModelStoreTests` | ⬜ |
-| 02 T1 | 2 | MODELS-01, MODELS-02 | Unit + build | `swift test --parallel`; `./local_build.sh Debug` | ⬜ |
-| 03 T1 | 3 | MODELS-03 | Unit (TDD) | `swift test --filter ModelMigrationTests` | ⬜ |
-| 03 T2 | 3 | MODELS-04 | Build | `./local_build.sh Debug` | ⬜ |
+| 01 T1 | 1 | MODELS-01, MODELS-02 | Unit (TDD) | `swift test --filter SharedModelStoreTests` | ✅ 5 passed |
+| 02 T1 | 2 | MODELS-01, MODELS-02 | Unit + build | `swift test --parallel`; `swift build` | ✅ 150 passed; build succeeded |
+| 03 T1 | 3 | MODELS-03 | Unit (TDD) | `swift test --filter ModelMigrationTests` | ✅ 4 passed |
+| 03 T2 | 3 | MODELS-04 | Build | `swift build` | ✅ succeeded |
 | 04 T1 | 4 | MODELS-01..04 | Manual, two accounts | see 15-04-PLAN | ⬜ |
 
 ## Security / privacy
