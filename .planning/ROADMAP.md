@@ -291,7 +291,16 @@ Plans:
 3. "Me" segments are right-aligned; all other speaker segments are left-aligned — matching iMessage visual convention
 4. `[Pending]` label resolves visually in-place when Reconciler assigns a speaker — no layout jump or full-list reload
 5. The existing flat-list transcript view is fully replaced by the bubble layout; no regression to MeetingDetailView navigation or meeting storage
-   **Plans**: TBD
+**Scope notes (2026-10-15)**:
+- Owner decisions: bubbles in both the live transcript (`MeetingNotesView`) and the saved meeting (`MeetingDetailView`); one bubble per speaker turn with continuous text, not a stack of per-row bubbles
+- Pending system phrases join the current remote speaker's bubble (muted) and move out only if resolved to someone else
+- Includes a fix for unstable speaker colours (`Speaker.colorIndex` used per-process `String.hashValue`)
+**Plans**: 3 plans
+
+Plans:
+- [ ] 12-01-PLAN.md — `TranscriptGrouping` pure model + stable speaker colour index, TDD (CHAT-01..04)
+- [ ] 12-02-PLAN.md — Shared `ChatTranscriptView`, wired into live and saved transcripts; old rows removed (CHAT-01..04)
+- [ ] 12-03-PLAN.md — Manual verification (CHAT-01..04)
 
 #### Phase 13: Reconciler — Async Speaker Enrichment
 
@@ -362,7 +371,7 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folder
 | 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 5/5            | Complete    | 2026-10-13 |
 | 11.4 Nemotron 3 Diarizer             | v1.2      | 4/4            | Complete    | 2026-10-14 |
 | 13. Reconciler — Async Enrichment    | v1.2      | 5/5            | Complete    | 2026-10-15 |
-| 12. Chat Bubble UI                   | v1.2      | 0/TBD          | Not started | -          |
+| 12. Chat Bubble UI                   | v1.2      | 0/3            | Planned     | -          |
 | 14. Voice Profiles                   | v1.2      | 0/TBD          | Not started | -          |
 
 \* Code complete and focused verification green; warning-clean build remains open carry-over work.

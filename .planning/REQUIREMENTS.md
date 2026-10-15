@@ -28,7 +28,7 @@
 
 ### Chat UI (CHAT)
 
-- [ ] **CHAT-01**: Consecutive segments одного спікера в MeetingDetailView відображаються як chat-style bubble group
+- [ ] **CHAT-01**: Consecutive segments одного спікера в живому транскрипті (MeetingNotesView) і в збереженій зустрічі (MeetingDetailView) відображаються як один chat-style bubble на репліку (рішення власника 2026-10-15)
 - [ ] **CHAT-02**: Ім'я спікера та аватар показуються один раз зверху кожної групи (не повторюється на кожному сегменті)
 - [ ] **CHAT-03**: Timestamp показується тільки в кінці кожної групи, не на кожному бублі
 - [ ] **CHAT-04**: "Me" сегменти вирівняні вправо, сегменти інших спікерів — вліво (iMessage style)
@@ -115,10 +115,10 @@
 | RT-01 | Phase 9 | Complete |
 | RT-02 | Phase 9 | Complete |
 | RT-03 | Phase 9 | Complete |
-| CHAT-01 | Phase 10 | Pending |
-| CHAT-02 | Phase 10 | Pending |
-| CHAT-03 | Phase 10 | Pending |
-| CHAT-04 | Phase 10 | Pending |
+| CHAT-01 | Phase 12 | Planned |
+| CHAT-02 | Phase 12 | Planned |
+| CHAT-03 | Phase 12 | Planned |
+| CHAT-04 | Phase 12 | Planned |
 
 | DEP-01 | Phase 11.3 | Complete (гілка не збирається: FluidAudio 0.10.0 vs Swift 6.3.3) |
 | DEP-02, DEP-03, DEP-04 | Phase 11.3 | Complete (UAT 2026-10-13) |
