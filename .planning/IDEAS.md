@@ -236,3 +236,48 @@ gh api "repos/alexpalyan/whisperclip/compare/cf764eb...wwu-git:main"
   write into foreign folders; fall back to our own copy if the foreign one disappears or changes.
 - Open: how to verify completeness (file list + sizes from the Hub manifest), HF cache symlink layout (`snapshots/` →
   `blobs/`), what happens when LM Studio updates or deletes the model mid-session.
+
+---
+
+## Apple Reminders: action items + reminder management from Q&A
+
+**Added:** 2026-10-15
+**Status:** owner wants it — last Radnyk feature not yet in WhisperClip; no phase assigned
+
+### Owner decision (2026-10-15)
+
+- Scope: action items → Reminders **plus** managing reminders from meeting Q&A (Radnyk-agent style:
+  "add a reminder about…", "what's in list X", update / complete / delete).
+
+### Radnyk today (`../stt-diarization`)
+
+- `internal/reminders/reminders.go`: AppleScript via `osascript` (15 s timeout), list / add / update / delete,
+  IDs `x-apple-reminder://…`, due date + time, priority, flag.
+- `internal/agent/tools.go`: LLM tools `get_reminders`, `add_reminder(list_name, title, notes, due_date, due_time,
+  priority, flagged)`, `update_reminder(id, …)`, `delete_reminder(id)`; prompt suggests creating reminders after the
+  meeting report; available lists are injected into the system prompt.
+
+### Shape in WhisperClip
+
+- **EventKit instead of AppleScript** (owner asked for the more elegant Swift way): `EKEventStore`,
+  `requestFullAccessToReminders()` (macOS 14), `EKReminder` with `calendarItemIdentifier`, `dueDateComponents`,
+  `priority`, `isCompleted`, `notes`/`url`; `EKEventStoreChanged` notification for sync. No Reminders.app round-trip,
+  stable IDs, typed API. Needs `NSRemindersFullAccessUsageDescription` (project.yml Info) and the hardened-runtime
+  calendars entitlement (`com.apple.security.personal-information.calendars`, covers reminders).
+- **Action items:** existing `MeetingAI.extractActionItems` / `ActionItem` (text, assignee, dueDate, isCompleted).
+  "Add to Reminders" per item and "Add all" with a list picker (remember last list); notes carry the meeting title/date;
+  store the reminder id on the `ActionItem`; completion syncs both ways.
+- **Q&A tools:** `mlx-swift-lm` already supports tool calling (`UserInput.tools: [ToolSpec]`, `ChatSession.tools`,
+  `Tool/Parsers/GemmaFunctionParser.swift`) — Gemma 4 E4B can call `get_reminders` / `add_reminder` /
+  `update_reminder` / `complete_reminder` / `delete_reminder`. Cloud LLM path (`LLM.swift`) needs its own tool-call
+  support or stays without tools at first.
+- Safety: writes (add/update/delete) are shown as a confirmation card in Q&A before they are applied — a local 4B model
+  can misfire; reads run directly.
+- Privacy: reminder titles/notes are user content — `LOG_SENSITIVE_DATA` rule.
+
+### Open questions
+
+- Confirmation for every write, or only for update/delete?
+- Which LLM backends get tools in the first version (local Gemma only?).
+- Q&A today is per meeting (`askQuestion(question:meeting:)`); reminders are global — keep it inside meeting Q&A or add a
+  general assistant entry point?
