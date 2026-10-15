@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Live Enrichment & Diarization Fix
-status: Phase 13 implementation complete; manual verification pending
-stopped_at: Phase 13 plans 01-04 complete; await 13-05 human verification
-last_updated: "2026-10-15T07:00:00Z"
+status: Phase 13 complete; Phase 12 next
+stopped_at: Phase 13 closed after UAT; Phase 12 (Chat Bubble UI) not yet planned
+last_updated: "2026-10-15T18:00:00Z"
 progress:
   scope: Phase 13
   total_plans: 5
-  completed_plans: 4
-  percent: 80
+  completed_plans: 5
+  percent: 100
 ---
 
 # Project State
@@ -19,7 +19,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-03-22)
 
 **Core value:** Точна транскрипція зустрічей з правильною атрибуцією спікерів.
-**Current focus:** Phase 13 execution (Reconciler on the Nemotron 3 timeline)
+**Current focus:** Phase 12 — Chat Bubble UI (planning)
 
 ---
 
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-03-22)
 Phase: 11.2 (true-streaming-asr) — COMPLETE
 Phase: 11.3 (dependency upgrade + Gemma 4 E4B) — COMPLETE 2026-10-13. Closed by owner decision with UAT 6/8 PASS; steps 5-6 (existing LLMs on the new MLX stack) were not run — residual risk recorded in `11.3-UAT.md`
 Phase: 11.4 (Nemotron 3 diarizer) — COMPLETE 2026-10-14. UAT PASS (owner). System audio is split into "Speaker N" by Nemotron 3 `fast32`; `DiarizerManager` removed
-Phase: 13 (Reconciler) — plans 01-04 implemented and tested (109 tests, Debug build PASS; callback jitter/short-tail fix included).
-Next: 13-05 manual verification — see `.planning/phases/13-reconciler/13-UAT.md`; live latency and model accuracy are not yet verified.
+Phase: 13 (Reconciler) — COMPLETE 2026-10-15. UAT 8/9 PASS (owner); step 9 (no-Nemotron fallback) skipped by owner decision. Live run exposed callback-jitter fragmentation and `[transcription failed]` rows, fixed in `5c80e5a`. Speaker labels occasionally imprecise — see `13-UAT.md`
+Next: plan Phase 12 (Chat Bubble UI), then Phase 14 (Voice Profiles)
 
 ### Resume 2026-10-13 (after pause since 2026-04-20)
 
