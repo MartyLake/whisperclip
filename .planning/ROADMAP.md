@@ -350,11 +350,11 @@ Plans:
 **Plans**: 6 plans
 
 Plans:
-- [ ] 14-01-PLAN.md — `SpeakerEmbedder` + CAM++ adapter, `VoiceSampleCollector`, `VoiceMatcher`, TDD (VOICE-02, VOICE-03)
-- [ ] 14-02-PLAN.md — `VoiceProfileStore` + `MeetingNote.voices`, TDD (VOICE-02, VOICE-04)
-- [ ] 14-03-PLAN.md — Live `VoiceIdentityTracker`, slot → name mapping, recorder wiring (VOICE-03)
-- [ ] 14-04-PLAN.md — Rename popover in bubble headers, rename/merge semantics, auto-save voice (VOICE-01, VOICE-02)
-- [ ] 14-05-PLAN.md — Voices tab in Settings: list, rename, merge, delete (VOICE-04)
+- [x] 14-01-PLAN.md — `SpeakerEmbedder` + CAM++ adapter, `VoiceSampleCollector`, `VoiceMatcher`, TDD (VOICE-02, VOICE-03)
+- [x] 14-02-PLAN.md — `VoiceProfileStore` + `MeetingNote.voices`, TDD (VOICE-02, VOICE-04)
+- [x] 14-03-PLAN.md — Live `VoiceIdentityTracker`, slot → name mapping, recorder wiring (VOICE-03)
+- [x] 14-04-PLAN.md — Rename popover in bubble headers, rename/merge semantics, auto-save voice (VOICE-01, VOICE-02)
+- [x] 14-05-PLAN.md — Voices tab in Settings: list, rename, merge, delete (VOICE-04)
 - [ ] 14-06-PLAN.md — Threshold calibration + manual verification (VOICE-01..04)
 
 ---
@@ -384,7 +384,7 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folder
 | 11.4 Nemotron 3 Diarizer             | v1.2      | 4/4            | Complete    | 2026-10-14 |
 | 13. Reconciler — Async Enrichment    | v1.2      | 5/5            | Complete    | 2026-10-15 |
 | 12. Chat Bubble UI                   | v1.2      | 3/3            | Complete    | 2026-10-15 |
-| 14. Voice Profiles                   | v1.2      | 0/6            | Planned     | -          |
+| 14. Voice Profiles                   | v1.2      | 5/6            | Calibration/UAT pending | -          |
 
 \* Code complete and focused verification green; warning-clean build remains open carry-over work.
 

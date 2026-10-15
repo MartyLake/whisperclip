@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Live Enrichment & Diarization Fix
-status: Phase 12 complete; Phase 14 planned
-stopped_at: Phase 12 closed after UAT 8/8; Phase 14 ready for execution
-last_updated: "2026-10-15T20:00:00Z"
+status: Phase 14 implemented; calibration and UAT pending
+stopped_at: Plans 14-01 through 14-05 implemented; awaiting Plan 14-06 calibration
+last_updated: "2026-10-15T11:06:00Z"
 progress:
   scope: Phase 14
   total_plans: 6
-  completed_plans: 0
-  percent: 0
+  completed_plans: 5
+  percent: 83
 ---
 
 # Project State
@@ -30,8 +30,8 @@ Phase: 11.3 (dependency upgrade + Gemma 4 E4B) — COMPLETE 2026-10-13. Closed b
 Phase: 11.4 (Nemotron 3 diarizer) — COMPLETE 2026-10-14. UAT PASS (owner). System audio is split into "Speaker N" by Nemotron 3 `fast32`; `DiarizerManager` removed
 Phase: 13 (Reconciler) — COMPLETE 2026-10-15. UAT 8/9 PASS (owner); step 9 (no-Nemotron fallback) skipped by owner decision. Live run exposed callback-jitter fragmentation and `[transcription failed]` rows, fixed in `5c80e5a`. Speaker labels occasionally imprecise — see `13-UAT.md`
 Phase: 12 (Chat Bubble UI) — COMPLETE 2026-10-15. UAT 8/8 PASS (owner). Bubbles in live and saved transcripts; stable speaker colours
-Phase: 14 (Voice Profiles) — PLANNED 2026-10-15: 6 plans in `.planning/phases/14-voice-profiles/`. CAM++ embedder; owner decisions: rename live and after, voice always saved
-Next: execute 14-01/14-02 (wave 1)
+Phase: 14 (Voice Profiles) — IMPLEMENTED plans 01–05 on 2026-10-15: CAM++, local profiles, live/saved naming, automatic matching and Voices Settings. 138 tests pass; Debug build succeeds.
+Next: Plan 14-06 calibration with two real 3+ person meetings, then manual UAT; see `14-UAT.md`. Threshold/margin are still provisional.
 
 ### Resume 2026-10-13 (after pause since 2026-04-20)
 
@@ -145,6 +145,6 @@ Next: execute 14-01/14-02 (wave 1)
 
 ## Session Continuity
 
-Last session: 2026-04-19T10:59:42Z
-Stopped at: Phase 11.2 PASS; next work is Phase 12 planning or hardware validation follow-up
-Resume file: None
+Last session: 2026-10-15
+Stopped at: Phase 14 plans 01–05 implemented; Plan 06 needs real scores and manual UAT
+Resume file: .planning/phases/14-voice-profiles/14-UAT.md
