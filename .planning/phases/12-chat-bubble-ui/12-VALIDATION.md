@@ -1,7 +1,7 @@
 ---
 phase: 12
 slug: chat-bubble-ui
-status: planned
+status: awaiting-uat
 created: 2026-10-15
 ---
 
@@ -21,9 +21,9 @@ created: 2026-10-15
 
 | Task | Wave | Requirement | Type | Command | Status |
 |------|------|-------------|------|---------|--------|
-| 01 T1 | 1 | CHAT-01..04 | Unit (TDD) | `swift test --filter TranscriptGroupingTests` | ⬜ |
-| 01 T2 | 1 | CHAT-02 | Unit (TDD) | `swift test --filter SharedViewsTests` | ⬜ |
-| 02 T1-T2 | 2 | CHAT-01..04 | Build + suite | `swift test --parallel`; `./local_build.sh Debug` | ⬜ |
+| 01 T1 | 1 | CHAT-01..04 | Unit (TDD) | `swift test --filter TranscriptGroupingTests` | PASS |
+| 01 T2 | 1 | CHAT-02 | Unit (TDD) | `swift test --filter SharedViewsTests` | PASS |
+| 02 T1-T2 | 2 | CHAT-01..04 | Build + suite | `swift test --parallel`; `./local_build.sh Debug` | PASS |
 | 03 T1 | 3 | CHAT-01..04 | Manual | see 12-03-PLAN | ⬜ |
 
 ## Security / privacy

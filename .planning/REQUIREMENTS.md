@@ -115,10 +115,10 @@
 | RT-01 | Phase 9 | Complete |
 | RT-02 | Phase 9 | Complete |
 | RT-03 | Phase 9 | Complete |
-| CHAT-01 | Phase 12 | Planned |
-| CHAT-02 | Phase 12 | Planned |
-| CHAT-03 | Phase 12 | Planned |
-| CHAT-04 | Phase 12 | Planned |
+| CHAT-01 | Phase 12 | Implemented; UAT pending |
+| CHAT-02 | Phase 12 | Implemented; UAT pending |
+| CHAT-03 | Phase 12 | Implemented; UAT pending |
+| CHAT-04 | Phase 12 | Implemented; UAT pending |
 
 | DEP-01 | Phase 11.3 | Complete (гілка не збирається: FluidAudio 0.10.0 vs Swift 6.3.3) |
 | DEP-02, DEP-03, DEP-04 | Phase 11.3 | Complete (UAT 2026-10-13) |

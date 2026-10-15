@@ -298,8 +298,8 @@ Plans:
 **Plans**: 3 plans
 
 Plans:
-- [ ] 12-01-PLAN.md — `TranscriptGrouping` pure model + stable speaker colour index, TDD (CHAT-01..04)
-- [ ] 12-02-PLAN.md — Shared `ChatTranscriptView`, wired into live and saved transcripts; old rows removed (CHAT-01..04)
+- [x] 12-01-PLAN.md — `TranscriptGrouping` pure model + stable speaker colour index, TDD (CHAT-01..04)
+- [x] 12-02-PLAN.md — Shared `ChatTranscriptView`, wired into live and saved transcripts; old rows removed (CHAT-01..04)
 - [ ] 12-03-PLAN.md — Manual verification (CHAT-01..04)
 
 #### Phase 13: Reconciler — Async Speaker Enrichment
