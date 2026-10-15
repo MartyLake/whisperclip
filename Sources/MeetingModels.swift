@@ -95,14 +95,24 @@ enum Speaker: Codable, Hashable, Sendable {
     // MARK: Color hint index (for consistent per-speaker colours in UI)
 
     /// A stable index (0-based) used to pick a colour from a palette.
-    /// .me → 0, .other → 1, .unknown → 9, .labeled → hash-derived 2…8
+    /// .me → 0, .other → 1, .unknown → 9, .pending → 8.
+    /// Speaker N cycles through 2…8; custom labels use deterministic FNV-1a.
     var colorIndex: Int {
         switch self {
         case .me:             return 0
         case .other:          return 1
         case .pending:        return 8
         case .unknown:        return 9
-        case .labeled(let l): return 2 + abs(l.hashValue) % 7
+        case .labeled(let label):
+            if label.hasPrefix("Speaker "),
+               let number = Int(label.dropFirst("Speaker ".count)), number >= 1 {
+                return 2 + (number - 1) % 7
+            }
+            var hash: UInt64 = 14695981039346656037
+            for byte in label.utf8 {
+                hash = (hash ^ UInt64(byte)) &* 1099511628211
+            }
+            return 2 + Int(hash % 7)
         }
     }
 }

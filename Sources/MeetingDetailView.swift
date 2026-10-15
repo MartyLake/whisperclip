@@ -440,11 +440,7 @@ struct MeetingDetailView: View {
                 speakerStatsView
                 
                 // Transcript
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(currentMeeting.segments) { segment in
-                        TranscriptSegmentRow(segment: segment)
-                    }
-                }
+                ChatTranscriptView(segments: currentMeeting.segments, selectable: true)
             }
         }
     }
@@ -664,96 +660,6 @@ struct MeetingDetailView: View {
 }
 
 // MARK: - Supporting Views
-
-struct TranscriptSegmentRow: View {
-    let segment: MeetingSegment
-    @State private var pulseAnimation = false
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Time
-            Text(segment.formattedTime)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.gray)
-                .frame(width: 40)
-            
-            // Speaker badge
-            Text(segment.displaySpeaker.displayName)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(segment.isPending ? .gray : speakerColor)
-                .frame(width: 50)
-            
-            if segment.isPending && segment.text.isEmpty {
-                TypingIndicator()
-            } else {
-                Text(segment.displayText)
-                    .font(.system(size: 14))
-                    .foregroundColor(segment.isPending ? .secondary : .white.opacity(0.9))
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.02))
-        .cornerRadius(8)
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
-                .foregroundColor(segment.isPending ? Color.gray.opacity(0.4) : Color.clear)
-                .scaleEffect(segment.isAwaitingFinalPartial && pulseAnimation ? 1.01 : 1.0)
-                .opacity(segment.isAwaitingFinalPartial && pulseAnimation ? 0.8 : 1.0)
-                .animation(.easeInOut(duration: 0.2), value: segment.isPending)
-                .animation(
-                    segment.isAwaitingFinalPartial
-                        ? .easeInOut(duration: 0.8).repeatForever(autoreverses: true)
-                        : .default,
-                    value: pulseAnimation
-                )
-        )
-        .onAppear {
-            pulseAnimation = segment.isAwaitingFinalPartial
-        }
-        .onChange(of: segment.isAwaitingFinalPartial) { _, newValue in
-            pulseAnimation = newValue
-        }
-    }
-    
-    private var speakerColor: Color {
-        speakerPaletteColor(segment.displaySpeaker)
-    }
-}
-
-struct TypingIndicator: View {
-    @State private var activeIndex = 0
-
-    private let dotCount = 3
-    private let animationInterval: TimeInterval = 0.4
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<dotCount, id: \.self) { index in
-                Circle()
-                    .fill(Color.secondary.opacity(activeIndex == index ? 0.9 : 0.3))
-                    .frame(width: 5, height: 5)
-                    .scaleEffect(activeIndex == index ? 1.3 : 1.0)
-                    .animation(.easeInOut(duration: animationInterval * 0.8), value: activeIndex)
-            }
-        }
-        .onAppear {
-            startAnimation()
-        }
-    }
-
-    private func startAnimation() {
-        Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(animationInterval))
-                await MainActor.run {
-                    activeIndex = (activeIndex + 1) % dotCount
-                }
-            }
-        }
-    }
-}
 
 struct ActionItemRow: View {
     let item: ActionItem
