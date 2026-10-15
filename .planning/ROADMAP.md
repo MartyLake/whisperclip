@@ -343,7 +343,19 @@ Plans:
 2. In a later meeting the same person is labelled by name automatically, with no false match between two enrolled people in a 3+ speaker test
 3. Profiles can be listed, merged, and deleted in Settings
 4. No voice-profile data leaves the device
-   **Plans**: TBD
+**Planning notes (2026-10-15)**:
+- Embedder resolved: FluidAudio CAM++ (`CampPlusEmbedder`, 192-d, public repo, 16.6 MB, beta). Nemotron 3 has no identity embeddings; Radnyk ECAPA profiles are not compatible and are not imported
+- Owner decisions: naming both live and in saved meetings; every rename saves the voice automatically (no prompt)
+- Embeddings are computed live (meeting audio is not saved) and stored per meeting; matching threshold calibrated on real recordings in Plan 06
+**Plans**: 6 plans
+
+Plans:
+- [ ] 14-01-PLAN.md — `SpeakerEmbedder` + CAM++ adapter, `VoiceSampleCollector`, `VoiceMatcher`, TDD (VOICE-02, VOICE-03)
+- [ ] 14-02-PLAN.md — `VoiceProfileStore` + `MeetingNote.voices`, TDD (VOICE-02, VOICE-04)
+- [ ] 14-03-PLAN.md — Live `VoiceIdentityTracker`, slot → name mapping, recorder wiring (VOICE-03)
+- [ ] 14-04-PLAN.md — Rename popover in bubble headers, rename/merge semantics, auto-save voice (VOICE-01, VOICE-02)
+- [ ] 14-05-PLAN.md — Voices tab in Settings: list, rename, merge, delete (VOICE-04)
+- [ ] 14-06-PLAN.md — Threshold calibration + manual verification (VOICE-01..04)
 
 ---
 
@@ -371,8 +383,8 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folder
 | 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 5/5            | Complete    | 2026-10-13 |
 | 11.4 Nemotron 3 Diarizer             | v1.2      | 4/4            | Complete    | 2026-10-14 |
 | 13. Reconciler — Async Enrichment    | v1.2      | 5/5            | Complete    | 2026-10-15 |
-| 12. Chat Bubble UI                   | v1.2      | 0/3            | Planned     | -          |
-| 14. Voice Profiles                   | v1.2      | 0/TBD          | Not started | -          |
+| 12. Chat Bubble UI                   | v1.2      | 2/3            | UAT pending | -          |
+| 14. Voice Profiles                   | v1.2      | 0/6            | Planned     | -          |
 
 \* Code complete and focused verification green; warning-clean build remains open carry-over work.
 

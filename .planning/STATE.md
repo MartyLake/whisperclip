@@ -4,7 +4,7 @@ milestone: v1.2
 milestone_name: Live Enrichment & Diarization Fix
 status: Phase 12 implemented; awaiting manual UAT
 stopped_at: Phase 12 plans 01-02 complete; Plan 03 human verification pending
-last_updated: "2026-10-15T18:00:00Z"
+last_updated: "2026-10-15T20:00:00Z"
 progress:
   scope: Phase 12
   total_plans: 3
@@ -30,7 +30,8 @@ Phase: 11.3 (dependency upgrade + Gemma 4 E4B) — COMPLETE 2026-10-13. Closed b
 Phase: 11.4 (Nemotron 3 diarizer) — COMPLETE 2026-10-14. UAT PASS (owner). System audio is split into "Speaker N" by Nemotron 3 `fast32`; `DiarizerManager` removed
 Phase: 13 (Reconciler) — COMPLETE 2026-10-15. UAT 8/9 PASS (owner); step 9 (no-Nemotron fallback) skipped by owner decision. Live run exposed callback-jitter fragmentation and `[transcription failed]` rows, fixed in `5c80e5a`. Speaker labels occasionally imprecise — see `13-UAT.md`
 Phase: 12 (Chat Bubble UI) — IMPLEMENTED 2026-10-15: plans 01-02 complete, 119 tests and Debug build pass; Plan 03 real-audio UAT pending
-Next: 12-03 manual UAT (see 12-UAT.md), then Phase 14 (Voice Profiles)
+Phase: 14 (Voice Profiles) — PLANNED 2026-10-15: 6 plans in `.planning/phases/14-voice-profiles/`. CAM++ embedder; owner decisions: rename live and after, voice always saved
+Next: 12-03 manual UAT (see 12-UAT.md), then execute 14-01/14-02 (wave 1)
 
 ### Resume 2026-10-13 (after pause since 2026-04-20)
 
