@@ -52,6 +52,7 @@ let WhisperClipCompanyName = "Cydanix LLC"
 let WhisperClipDonateLink = "https://donate.stripe.com/14A3cvayk1vbfys8iUaIM22"
 
 let WhisperClipAppName = "WhisperClip"
+let Shared_Models_Root = "/Users/Shared/WhisperClip/Models"
 
 let KiloByte = Int64(1024)
 let MegaByte = KiloByte * KiloByte

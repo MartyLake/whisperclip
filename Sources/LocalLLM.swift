@@ -48,6 +48,7 @@ class LocalLLM {
     }
     
     static func loadModel(modelRepo: String, modelName: String) async throws -> ModelContainer {
+        await ModelMigration.runAtLaunch()
         let modelPath = try await ModelStorage.shared.getModelPath(modelRepo: modelRepo, modelName: modelName)
 
         setupGPUCacheLimitOnce()

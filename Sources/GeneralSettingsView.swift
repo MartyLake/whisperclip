@@ -6,6 +6,8 @@ struct GeneralSettingsView: View {
     @State private var selectedLanguage: String = "auto"
     @State private var showingResetConfirmation = false
     @State private var showingDeleteModelsConfirmation = false
+    @State private var showingDeleteModelConfirmation = false
+    @State private var modelPendingDeletion: String?
     @State private var diarizationProgress = 0.0
     @State private var diarizationBusy = false
     @State private var diarizationError: String?
@@ -120,8 +122,23 @@ struct GeneralSettingsView: View {
                             .font(.headline)
                             .foregroundColor(.white)
 
-                        Text("Delete all downloaded AI models from your system. This will free up disk space but you'll need to re-download models when needed. Downloaded models are typically stored in your Application Support directory.")
+                        Text("Models are stored at \(ModelLocations.root.path) and shared by all users of this Mac.")
                             .font(.body)
+                            .foregroundColor(.gray)
+
+                        if !ModelLocations.isShared {
+                            Text("The shared folder was created by another user with an older app version. Models are stored in your per-user folder.")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        }
+
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([ModelLocations.root])
+                        }
+                        .buttonStyle(.link)
+
+                        Text("Deleting a model removes it for all users of this Mac.")
+                            .font(.caption)
                             .foregroundColor(.gray)
 
                         HStack {
@@ -188,7 +205,16 @@ struct GeneralSettingsView: View {
                 llmVM.deleteAllModels()
             }
         } message: {
-            Text("Are you sure you want to delete all downloaded AI models? This will free up disk space but you'll need to re-download models when they're needed again. This action cannot be undone.")
+            Text("Are you sure you want to delete all downloaded AI models for all users? This will free up disk space but you'll need to re-download models when they're needed again. This action cannot be undone.")
+        }
+        .alert("Delete Model", isPresented: $showingDeleteModelConfirmation) {
+            Button("Cancel", role: .cancel) { modelPendingDeletion = nil }
+            Button("Delete", role: .destructive) {
+                if let modelPendingDeletion { llmVM.deleteLLMModel(modelName: modelPendingDeletion) }
+                modelPendingDeletion = nil
+            }
+        } message: {
+            Text("This removes the model for all users of this Mac.")
         }
         .onAppear {
             selectedLanguage = settings.language
@@ -329,9 +355,15 @@ struct GeneralSettingsView: View {
                             Spacer()
 
                             if isDownloading {
-                                ProgressView(value: llmVM.llmDownloadProgress)
-                                    .progressViewStyle(.linear)
-                                    .frame(width: 120)
+                                if llmVM.llmDownloadWaitingForOtherUser {
+                                    Text("Another user is downloading this model…")
+                                        .font(.caption)
+                                        .foregroundColor(.gray)
+                                } else {
+                                    ProgressView(value: llmVM.llmDownloadProgress)
+                                        .progressViewStyle(.linear)
+                                        .frame(width: 120)
+                                }
                             } else if isDownloaded {
                                 if !isSelected {
                                     Button("Select") {
@@ -341,7 +373,8 @@ struct GeneralSettingsView: View {
                                 }
 
                                 Button("Delete") {
-                                    llmVM.deleteLLMModel(modelName: model.id)
+                                    modelPendingDeletion = model.id
+                                    showingDeleteModelConfirmation = true
                                 }
                                 .buttonStyle(.bordered)
                                 .foregroundColor(.red)

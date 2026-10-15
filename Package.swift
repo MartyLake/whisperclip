@@ -38,7 +38,8 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("SwiftUI"),
                 .linkedFramework("AppKit"),
-                .linkedFramework("AVFoundation")
+                .linkedFramework("AVFoundation"),
+                .linkedFramework("DirectoryService")
             ]
         ),
         .testTarget(

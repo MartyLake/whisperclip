@@ -7,32 +7,24 @@ class LocalParakeet {
     
     /// Get the directory where Parakeet models are stored
     static func getModelsDirectory() -> URL {
-        return AsrModels.defaultCacheDirectory(for: .v3)
+        return ModelLocations.fluidAudio.appendingPathComponent(Repo.parakeetV3.folderName, isDirectory: true)
     }
 
     /// Get the base directory where streaming Parakeet EOU models are stored
     static func getStreamingModelsBaseDirectory() -> URL {
-        let applicationSupportURL = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first ?? GenericHelper.getAppSupportDirectory()
-
-        return applicationSupportURL
-            .appendingPathComponent("FluidAudio", isDirectory: true)
-            .appendingPathComponent("Models", isDirectory: true)
+        return ModelLocations.fluidAudio
     }
 
     static func getStreamingModelsRootDirectory() -> URL {
         getStreamingModelsBaseDirectory()
-            .appendingPathComponent("parakeet-eou-streaming", isDirectory: true)
+            .appendingPathComponent(Repo.parakeetEou160.folderName, isDirectory: true)
     }
 
     /// Get the directory where the configured streaming chunk-size models are stored
     static func getStreamingModelsDirectory(
-        chunkSize: StreamingChunkSize = streamingChunkSize
+        chunkSize _: StreamingChunkSize = streamingChunkSize
     ) -> URL {
         getStreamingModelsRootDirectory()
-            .appendingPathComponent(chunkSize.modelSubdirectory, isDirectory: true)
     }
     
     /// Check if Parakeet models are downloaded
@@ -68,7 +60,9 @@ class LocalParakeet {
     static func deleteModels() throws {
         let directory = getModelsDirectory()
         if FileManager.default.fileExists(atPath: directory.path) {
-            try FileManager.default.removeItem(at: directory)
+            try ModelLocations.store.withExclusiveLockSync(model: "parakeet-shared-models") {
+                try FileManager.default.removeItem(at: directory)
+            }
             if GenericHelper.logSensitiveData() {
                 Logger.log("Parakeet models deleted from \(directory.path)", log: Logger.general)
             }
@@ -80,7 +74,9 @@ class LocalParakeet {
     static func deleteStreamingModels() throws {
         let directory = getStreamingModelsRootDirectory()
         if FileManager.default.fileExists(atPath: directory.path) {
-            try FileManager.default.removeItem(at: directory)
+            try ModelLocations.store.withExclusiveLockSync(model: "parakeet-shared-models") {
+                try FileManager.default.removeItem(at: directory)
+            }
             if GenericHelper.logSensitiveData() {
                 Logger.log("Parakeet streaming models deleted from \(directory.path)", log: Logger.general)
             }
@@ -92,20 +88,11 @@ class LocalParakeet {
     /// offline download/load/init = 0-70%
     /// streaming download = 70-100%
     static func downloadModels(progress: @escaping (Double) -> Void) async throws {
+        await ModelMigration.runAtLaunch()
         Logger.log("Downloading Parakeet models...", log: Logger.general)
         
-        let offlineExists = modelsExist()
-        let streamingExists = streamingModelsExist()
-
-        // Check if models already exist
-        if offlineExists && streamingExists {
-            Logger.log("Parakeet models already exist, skipping download", log: Logger.general)
-            progress(1.0)
-            return
-        }
-        
         // Check disk space first
-        let freeSpace = GenericHelper.getFreeDiskSpace(path: GenericHelper.getAppSupportDirectory())
+        let freeSpace = GenericHelper.getFreeDiskSpace(path: ModelLocations.root)
         if freeSpace < MinimalFreeDiskSpace {
             let shouldContinue = await WhisperClip.shared?.showNoEnoughDiskSpaceAlert(freeSpace: freeSpace) ?? false
             if !shouldContinue {
@@ -119,10 +106,19 @@ class LocalParakeet {
         
         progress(0.01)
         
+        try await ModelLocations.store.withExclusiveLock(model: "parakeet-shared-models", timeout: .seconds(1800)) {
         do {
+            let offlineExists = modelsExist()
+            let streamingExists = streamingModelsExist()
+            if offlineExists && streamingExists {
+                Logger.log("Parakeet models already exist, skipping download", log: Logger.general)
+                progress(1.0)
+                return
+            }
             if !offlineExists {
                 // Download models - FluidAudio handles the download internally
-                _ = try await AsrModels.download(version: .v3)
+                _ = try await AsrModels.download(to: getModelsDirectory(), version: .v3)
+                if ModelLocations.isShared { _ = try SharedModelStore.shared.repairPermissions(at: getModelsDirectory()) }
                 progress(0.45)
 
                 // Load models to trigger CoreML compilation
@@ -146,6 +142,7 @@ class LocalParakeet {
 
             if !streamingExists {
                 try await ModelHub.download(.parakeetEou160, to: getStreamingModelsBaseDirectory())
+                if ModelLocations.isShared { _ = try SharedModelStore.shared.repairPermissions(at: getStreamingModelsRootDirectory()) }
             }
 
             progress(1.0)
@@ -157,10 +154,12 @@ class LocalParakeet {
             Logger.log(message, log: Logger.general, type: .error)
             throw error
         }
+        }
     }
     
     /// Load Parakeet model (downloads if needed)
     static func loadModel() async throws -> AsrManager {
+        await ModelMigration.runAtLaunch()
         // Validate models exist first
         guard modelsExist() else {
             throw NSError(domain: "LocalParakeet", code: 1,

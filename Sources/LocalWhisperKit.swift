@@ -94,6 +94,7 @@ class LocalWhisperKit {
     }
 
     static func loadModel(modelRepo: String, modelName: String) async throws -> WhisperKit {
+        await ModelMigration.runAtLaunch()
         Logger.log("Loading WhisperKit model", log: Logger.general)
         let modelPath = try await ModelStorage.shared.getModelPath(modelRepo: modelRepo, modelName: modelName)
         let tokenizerBase = try await prepareLocalTokenizerCache(from: modelPath, modelName: modelName)

@@ -17,10 +17,17 @@ struct CampPlusSpeakerEmbedder: SpeakerEmbedder {
     private let model: CampPlusEmbedder
 
     static func load() async throws -> Self {
+        await ModelMigration.runAtLaunch()
         // FluidAudio's informational model-loader messages include local paths.
         AppLogger.minimumLevel = GenericHelper.logSensitiveData() ? .debug : .warning
-        // FluidAudio/Models/campplus-coreml; uses the dependency's cache layout.
-        return Self(model: try await CampPlusEmbedder.load())
+        let directory = ModelLocations.fluidAudio.appendingPathComponent(Repo.campPlus.folderName, isDirectory: true)
+        try await ModelLocations.store.withExclusiveLock(model: "campplus") {
+            if !CampPlusModels.modelsExist(at: directory) {
+                try await ModelHub.download(.campPlus, to: ModelLocations.fluidAudio)
+                if ModelLocations.isShared { _ = try SharedModelStore.shared.repairPermissions(at: directory) }
+            }
+        }
+        return Self(model: CampPlusEmbedder(models: try CampPlusModels.load(from: directory)))
     }
 
     func embed(_ samples: [Float]) async throws -> [Float] {

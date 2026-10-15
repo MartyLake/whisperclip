@@ -233,6 +233,7 @@ class MeetingRecorder: NSObject, ObservableObject {
         }
 
         do {
+            await ModelMigration.runAtLaunch()
             let preset = SettingsStore.shared.nemotron3Preset
             guard ModelStorage.shared.nemotron3ModelsExist(for: preset) else {
                 throw MeetingRecorderError.recordingFailed
@@ -240,7 +241,8 @@ class MeetingRecorder: NSObject, ObservableObject {
             // The Hub cache keeps the bundle under `monolithic/v2/` and the `.bin` assets at the
             // root, which `load(config:directory:)` cannot read. With a complete cache this
             // call loads from disk without network access.
-            let models = try await Nemotron3Models.loadFromHuggingFace(config: preset.config)
+            let models = try await Nemotron3Models.loadFromHuggingFace(
+                config: preset.config, cacheDirectory: ModelLocations.fluidAudio)
             let manager = SpeakerBufferManager(
                 provider: Nemotron3DiarizationProvider(preset: preset, models: models),
                 sampleRate: sampleRate,

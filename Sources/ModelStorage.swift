@@ -9,7 +9,7 @@ class ModelStorage {
     private let loadedMarkerFileName = "whisperclip.loaded"
 
     private init() {
-        self.downloader = ModelDownloader(downloadBase: GenericHelper.getAppSupportDirectory())
+        self.downloader = ModelDownloader(downloadBase: ModelLocations.root)
     }
 
     func getModelFilesUrl(modelID: String, subfolder: String) -> String {
@@ -25,6 +25,7 @@ class ModelStorage {
     }
 
     func preLoadModel(modelRepo: String, modelName: String) async throws {
+        await ModelMigration.runAtLaunch()
         Logger.log("Loading model \(modelRepo)/\(modelName)", log: Logger.general)
 
         switch modelRepo {
@@ -80,7 +81,20 @@ class ModelStorage {
         return FileManager.default.fileExists(atPath: getModelLoadedMarkerFilePath(modelRepo: modelRepo, modelName: modelName))
     }
 
-    func downloadModel(modelRepo: String, modelName: String, progress: @escaping (Double) -> Void) async throws -> URL {
+    func downloadModel(
+        modelRepo: String,
+        modelName: String,
+        progress: @escaping @Sendable (Double) -> Void,
+        onWait: @escaping @Sendable () -> Void = {}
+    ) async throws -> URL {
+        await ModelMigration.runAtLaunch()
+        let lockID = modelName.isEmpty ? modelRepo : modelRepo + "/" + modelName
+        return try await ModelLocations.store.withExclusiveLock(model: lockID, timeout: .seconds(1800), onWait: onWait) {
+            try await self.downloadModelLocked(modelRepo: modelRepo, modelName: modelName, progress: progress)
+        }
+    }
+
+    private func downloadModelLocked(modelRepo: String, modelName: String, progress: @escaping @Sendable (Double) -> Void) async throws -> URL {
         try GenericHelper.folderCreate(folder: downloader.downloadBase)
 
         let freeSpace = GenericHelper.getFreeDiskSpace(path: downloader.downloadBase)
@@ -93,11 +107,12 @@ class ModelStorage {
 
         let modelDir = getModelDir(modelRepo: modelRepo, modelName: modelName)
         if GenericHelper.folderExists(folder: modelDir) {
-            try deleteModel(modelRepo: modelRepo, modelName: modelName)
+            try FileManager.default.removeItem(at: modelDir)
         }
 
         Logger.log("Downloading model modelRepo: \(modelRepo), modelName: \(modelName)...", log: Logger.general)
         let modelPath = try await downloader.downloadSubfolder(modelID: modelRepo, subfolder: modelName, progress: progress)
+        if ModelLocations.isShared { _ = try SharedModelStore.shared.repairPermissions(at: modelPath) }
         if GenericHelper.logSensitiveData() {
             Logger.log("Model modelRepo: \(modelRepo), modelName: \(modelName) downloaded to \(modelPath.path)", log: Logger.general)
         }
@@ -128,14 +143,13 @@ class ModelStorage {
 
     func deleteModel(modelRepo: String, modelName: String) throws {
         let modelDir = getModelDir(modelRepo: modelRepo, modelName: modelName)
-
-        guard GenericHelper.folderExists(folder: modelDir) else {
-            Logger.log("Model modelRepo: \(modelRepo), modelName: \(modelName) does not exist", log: Logger.general)
-            return
-        }
+        let lockID = modelName.isEmpty ? modelRepo : modelRepo + "/" + modelName
 
         do {
-            try FileManager.default.removeItem(at: modelDir)
+            try ModelLocations.store.withExclusiveLockSync(model: lockID, timeoutSeconds: 1800) {
+                guard FileManager.default.fileExists(atPath: modelDir.path) else { return }
+                try FileManager.default.removeItem(at: modelDir)
+            }
             Logger.log("Successfully deleted model modelRepo: \(modelRepo), modelName: \(modelName) and all its contents", log: Logger.general)
         } catch {
             Logger.log("Failed to delete model modelRepo: \(modelRepo), modelName: \(modelName): \(error.localizedDescription)", log: Logger.general)
@@ -213,19 +227,18 @@ class ModelStorage {
     }
 
     func deleteAllModels() {
-        // Delete WhisperKit and LLM models
-        let modelDir = downloader.downloadBase
-        if GenericHelper.folderExists(folder: modelDir) {
-            do {
-                try FileManager.default.removeItem(at: modelDir)
-            } catch {
-                Logger.log("Failed to delete all models: \(error.localizedDescription)", log: Logger.general)
-            }
+        for modelName in WhisperKitModelNames {
+            do { try deleteModel(modelRepo: WhisperKitRepo, modelName: modelName) }
+            catch { Logger.log("Failed to delete a WhisperKit model: \(error.localizedDescription)", log: Logger.general) }
+        }
+        for modelName in TextLLMModelNames {
+            do { try deleteModel(modelRepo: "\(MlxCommunityRepo)/\(modelName)", modelName: "") }
+            catch { Logger.log("Failed to delete an LLM model: \(error.localizedDescription)", log: Logger.general) }
         }
         
         // Also delete Parakeet models (stored in FluidAudio's directory)
         do {
-            try LocalParakeet.deleteModels()
+            try deleteParakeetModels()
         } catch {
             Logger.log("Failed to delete Parakeet models: \(error.localizedDescription)", log: Logger.general)
         }
@@ -235,6 +248,14 @@ class ModelStorage {
             try deleteNemotron3Models()
         } catch {
             Logger.log("Failed to delete Nemotron 3 models: \(error.localizedDescription)", log: Logger.general)
+        }
+        do {
+            let campPlus = fluidAudioModelsDirectory.appendingPathComponent(Repo.campPlus.folderName, isDirectory: true)
+            try ModelLocations.store.withExclusiveLockSync(model: "campplus") {
+                if FileManager.default.fileExists(atPath: campPlus.path) { try FileManager.default.removeItem(at: campPlus) }
+            }
+        } catch {
+            Logger.log("Failed to delete CAM++ models: \(error.localizedDescription)", log: Logger.general)
         }
     }
     
@@ -284,8 +305,7 @@ class ModelStorage {
     // MARK: - Nemotron 3 Model Support
 
     private var fluidAudioModelsDirectory: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("FluidAudio/Models", isDirectory: true)
+        ModelLocations.fluidAudio
     }
 
     func getNemotron3ModelsDirectory() -> URL {
@@ -306,9 +326,13 @@ class ModelStorage {
     }
 
     func downloadNemotron3Models(for preset: Nemotron3Preset, progress: @escaping @Sendable (Double) -> Void) async throws {
+        await ModelMigration.runAtLaunch()
+        try await ModelLocations.store.withExclusiveLock(model: "nemotron3", timeout: .seconds(1800)) {
         do {
             _ = try await Nemotron3Models.loadFromHuggingFace(
-                config: preset.config, progressHandler: { update in progress(update.fractionCompleted) })
+                config: preset.config, cacheDirectory: fluidAudioModelsDirectory,
+                progressHandler: { update in progress(update.fractionCompleted) })
+            if ModelLocations.isShared { _ = try SharedModelStore.shared.repairPermissions(at: getNemotron3ModelsDirectory()) }
             progress(1)
         } catch {
             let nsError = error as NSError
@@ -321,12 +345,15 @@ class ModelStorage {
             throw NSError(domain: "ModelStorage", code: nsError.code,
                           userInfo: [NSLocalizedDescriptionKey: "Could not download Nemotron 3: \(error.localizedDescription)"])
         }
+        }
     }
 
     func deleteNemotron3Models() throws {
         let fm = FileManager.default
         let nemotron = getNemotron3ModelsDirectory()
-        if fm.fileExists(atPath: nemotron.path) { try fm.removeItem(at: nemotron) }
+        if fm.fileExists(atPath: nemotron.path) {
+            try ModelLocations.store.withExclusiveLockSync(model: "nemotron3") { try fm.removeItem(at: nemotron) }
+        }
         let retired = fluidAudioModelsDirectory.appendingPathComponent("speaker-diarization", isDirectory: true)
         if fm.fileExists(atPath: retired.path) { try fm.removeItem(at: retired) }
     }
@@ -336,7 +363,9 @@ class ModelStorage {
             .appendingPathComponent(preset.config.hubSubdirectory, isDirectory: true)
             .appendingPathComponent(preset.config.modelFileName, isDirectory: true)
         if FileManager.default.fileExists(atPath: bundle.path) {
-            try FileManager.default.removeItem(at: bundle)
+            try ModelLocations.store.withExclusiveLockSync(model: "nemotron3") {
+                try FileManager.default.removeItem(at: bundle)
+            }
         }
     }
 
