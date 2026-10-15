@@ -140,3 +140,75 @@ gh api "repos/alexpalyan/whisperclip/compare/cf764eb...wwu-git:main"
 - Where notes live: `MeetingModels` field, shown inline in the bubble timeline, included in the final summary prompt.
 - UI entry point: hotkey to drop a note without leaving the call app; a small input in the recording overlay?
 - Logging: notes and questions are user content — same `LOG_SENSITIVE_DATA` rule as transcripts.
+
+---
+
+## D-2 — Meeting auto-detect misses Google Meet installed as a Chrome PWA
+
+**Added:** 2026-10-15
+**Status:** observed in code + live window list; no phase assigned (natural fit: the call-recording phase below)
+
+- Owner runs Meet as a Chrome PWA (`~/Applications/Chrome Apps.localized/Google Meet.app`,
+  bundle id `com.google.Chrome.app.kjgfgldnnfoeklkmfkjfagphfepbbdan`).
+- Checked 2026-10-15 with `CGWindowListCopyWindowInfo` during a test call: the Meet windows are owned by the PWA
+  process itself (owner name "Google Meet", that bundle id), not by `com.google.Chrome`.
+- `MeetingDetector.checkBrowserForMeetings` only scans windows of browser bundle ids, and `MeetingSource.meet`
+  lists `com.google.Chrome`, `com.apple.Safari`, `com.google.meet` — so a PWA call is most likely not detected.
+- Fix shape: also scan `com.google.Chrome.app.*` (and Edge/Brave PWA prefixes if needed) and match the call title
+  pattern below. Not verified that auto-detect actually fails for the owner — confirm first.
+
+---
+
+## Call recording: video of the call window + audio, saved to ~/Movies
+
+**Added:** 2026-10-15
+**Status:** owner wants it; plan as Phase 15 after Phase 14 closes
+
+### Why
+
+- Today the owner records calls with OBS and processes the video in Radnyk. Main pain: choosing the window to
+  capture by hand every time.
+- Saved audio also unlocks: post-meeting SpeakerKit refine (entry above), re-transcription with WhisperKit (better
+  Ukrainian than Parakeet, owner 2026-10-15), better voice profiles from the whole meeting, play-from-bubble.
+
+### Owner decisions (2026-10-15)
+
+- Pick the call window automatically.
+- When a Meet presentation is popped out into its own window, record **only the presentation**; switch back to the
+  call window when it closes. Meeting audio continues without gaps.
+- Save to `~/Movies` (app is not sandboxed; `~/Movies` is not TCC-protected — no new entitlement).
+
+### Facts from the live check (2026-10-15)
+
+- Meet PWA call window title: `Google Meet - Meet: "abc-defg-hij" 🔊` — meeting code in quotes (`[a-z]{3}-[a-z]{4}-[a-z]{3}`),
+  🔊 appears while audio plays. The home screen presumably has no code — not checked.
+- Owner: PWA windows owned by the PWA bundle id; audio is rendered by the main Chrome process (OBS sees the Meet window
+  separately but audio must be taken from "Google Chrome"). We capture whole-system audio, so this does not matter for us;
+  per-app audio filtering would pull in every Chrome tab.
+- The call window was reported `onscreen = false` (other Space / covered). To verify: ScreenCaptureKit
+  `SCContentFilter(desktopIndependentWindow:)` delivers frames for a window on another Space; minimized windows give none.
+- **Not yet checked:** what the popped-out presentation window looks like (title, owner). Owner could not pop one out
+  while presenting their own screen — Meet does not render your own share. Try: join from a phone, present there, pop out in the
+  PWA. Working assumption: a second large window of the same Meet PWA process during a call.
+
+### Shape
+
+- Window picker: per-source rules (Meet PWA / Meet in a browser tab / Zoom / Teams / Slack huddle — reuse
+  `MeetingSource.windowTitleKeywords`), prefer keyword match then largest window; ambiguous → system
+  `SCContentSharingPicker` (macOS 14), remember choice per app. Re-evaluate every few seconds and switch with
+  `SCStream.updateContentFilter` (macOS 14).
+- Writer: `AVAssetWriter` (`SCRecordingOutput` needs macOS 15; we support 14) — hardware HEVC, fixed output size with
+  letterboxing (source window size changes on switch), 10-15 fps; two audio tracks: mic and system, kept separate.
+- File: `~/Movies/WhisperClip <date time> — <source>.mov`; linked from the saved meeting; deleting the meeting asks
+  whether to delete the video.
+- Settings: on/off (default off), fps/quality, retention; visible recording indicator. Consent: recording others'
+  video/voice may need all-party consent — say so in the setting.
+- Logging: file paths only with `LOG_SENSITIVE_DATA=1`.
+
+### Open questions
+
+- Format for Radnyk: two separate audio tracks vs one mixed track (Radnyk may expect a single stereo/mono track).
+- Should the presentation switch also apply to Zoom/Teams screen-share windows, or Meet only at first?
+- Later, not this phase: OCR of the active-speaker tile name (Vision) mapped onto the Nemotron timeline → automatic
+  speaker names without renaming (extends Phase 14); slide text into Summary/Q&A context. Can run on live frames
+  without saving video.
