@@ -7,6 +7,7 @@ struct GeneralSettingsView: View {
     @State private var showingResetConfirmation = false
     @State private var showingDeleteModelsConfirmation = false
     @State private var showingDeleteModelConfirmation = false
+    @State private var showingDeleteNemotronConfirmation = false
     @State private var modelPendingDeletion: String?
     @State private var diarizationProgress = 0.0
     @State private var diarizationBusy = false
@@ -216,6 +217,19 @@ struct GeneralSettingsView: View {
         } message: {
             Text("This removes the model for all users of this Mac.")
         }
+        .alert("Delete Speaker Separation Model", isPresented: $showingDeleteNemotronConfirmation) {
+            Button("Cancel", role: .cancel) { }
+            Button("Delete", role: .destructive) {
+                do {
+                    try ModelStorage.shared.deleteNemotron3Models(for: settings.nemotron3Preset)
+                    modelStateRefresh += 1
+                } catch {
+                    Logger.log("Failed to delete Nemotron 3 model: \(error.localizedDescription)", log: Logger.general, type: .error)
+                }
+            }
+        } message: {
+            Text("This removes the model for all users of this Mac.")
+        }
         .onAppear {
             selectedLanguage = settings.language
         }
@@ -270,11 +284,7 @@ struct GeneralSettingsView: View {
                     Text("Speaker separation is ready for the next recording.")
                         .font(.caption).foregroundColor(.green)
                     Button("Delete Selected Model") {
-                        do {
-                            try ModelStorage.shared.deleteNemotron3Models(for: settings.nemotron3Preset)
-                            modelStateRefresh += 1
-                        }
-                        catch { Logger.log("Failed to delete Nemotron 3 model: \(error.localizedDescription)", log: Logger.general, type: .error) }
+                        showingDeleteNemotronConfirmation = true
                     }.disabled(diarizationBusy)
                 } else {
                     Text("Speaker separation is off. System audio will appear as one speaker until this model is downloaded.")
