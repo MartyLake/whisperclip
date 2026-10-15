@@ -313,10 +313,10 @@ Plans:
 **Plans**: 5 plans (01, 02, 03 can run in parallel)
 
 Plans:
-- [ ] 13-01-PLAN.md — Timed transcription: word timings from Parakeet, `words = nil` for WhisperKit (REC-02)
-- [ ] 13-02-PLAN.md — `SpeakerReconciler` actor: resolution rules, coverage, deadline, TDD (REC-01..03)
-- [ ] 13-03-PLAN.md — Timeline window queries on `SpeakerBufferManager` + pause-based `SystemAudioChunker`, TDD (REC-01)
-- [ ] 13-04-PLAN.md — Wiring: one system ASR path, pending-until-resolved, split API in `MeetingSession`, stop order, old buffer path removed (REC-01..03)
+- [x] 13-01-PLAN.md — Timed transcription: word timings from Parakeet, `words = nil` for WhisperKit (REC-02)
+- [x] 13-02-PLAN.md — `SpeakerReconciler` actor: resolution rules, coverage, deadline, TDD (REC-01..03)
+- [x] 13-03-PLAN.md — Timeline window queries on `SpeakerBufferManager` + pause-based `SystemAudioChunker`, TDD (REC-01)
+- [x] 13-04-PLAN.md — Wiring: one system ASR path, pending-until-resolved, split API in `MeetingSession`, stop order, old buffer path removed (REC-01..03)
 - [ ] 13-05-PLAN.md — Manual verification (REC-01..03)
 
 #### Phase 14: Voice Profiles — Named Speakers Across Meetings
@@ -361,7 +361,7 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folder
 | 11.2 True Streaming ASR              | v1.2      | 4/4            | Complete    | 2026-04-19 |
 | 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 5/5            | Complete    | 2026-10-13 |
 | 11.4 Nemotron 3 Diarizer             | v1.2      | 4/4            | Complete    | 2026-10-14 |
-| 13. Reconciler — Async Enrichment    | v1.2      | 0/5            | Planned     | -          |
+| 13. Reconciler — Async Enrichment    | v1.2      | 4/5            | UAT pending | -          |
 | 12. Chat Bubble UI                   | v1.2      | 0/TBD          | Not started | -          |
 | 14. Voice Profiles                   | v1.2      | 0/TBD          | Not started | -          |
 

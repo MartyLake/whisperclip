@@ -125,7 +125,7 @@
 | GEMMA-01 | Phase 11.3 | Complete (UAT 2026-10-13) |
 | GEMMA-02 | Phase 11.3 | Complete by owner decision 2026-10-13 — existing LLMs not run by hand, see `11.3-UAT.md` "Residual risk" |
 | NEMO-01..04 | Phase 11.4 | Complete (UAT 2026-10-14) |
-| REC-01..03 | Phase 13 | Pending |
+| REC-01..03 | Phase 13 | Implemented + automated tests; live UAT pending |
 | TOKEN-01..03 | — | Deferred (модель публічна; див. `IDEAS.md`) |
 | VOICE-01..04 | Phase 14 | Pending |
 
