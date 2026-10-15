@@ -300,7 +300,7 @@ Plans:
 Plans:
 - [x] 12-01-PLAN.md — `TranscriptGrouping` pure model + stable speaker colour index, TDD (CHAT-01..04)
 - [x] 12-02-PLAN.md — Shared `ChatTranscriptView`, wired into live and saved transcripts; old rows removed (CHAT-01..04)
-- [ ] 12-03-PLAN.md — Manual verification (CHAT-01..04)
+- [x] 12-03-PLAN.md — Manual verification (CHAT-01..04) — UAT 8/8 PASS
 
 #### Phase 13: Reconciler — Async Speaker Enrichment
 
@@ -383,7 +383,7 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folder
 | 11.3 Deps upgrade + Gemma 4 E4B      | v1.2      | 5/5            | Complete    | 2026-10-13 |
 | 11.4 Nemotron 3 Diarizer             | v1.2      | 4/4            | Complete    | 2026-10-14 |
 | 13. Reconciler — Async Enrichment    | v1.2      | 5/5            | Complete    | 2026-10-15 |
-| 12. Chat Bubble UI                   | v1.2      | 2/3            | UAT pending | -          |
+| 12. Chat Bubble UI                   | v1.2      | 3/3            | Complete    | 2026-10-15 |
 | 14. Voice Profiles                   | v1.2      | 0/6            | Planned     | -          |
 
 \* Code complete and focused verification green; warning-clean build remains open carry-over work.

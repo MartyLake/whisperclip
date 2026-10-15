@@ -1,5 +1,3 @@
-# 13-05 — Awaiting manual verification
+# 13-05 — Manual verification
 
-Status: pending human verification, not complete.
-
-Implementation and automated checks are complete. No real multi-speaker audio session was run, no models were downloaded/deleted, and no subjective latency or attribution results are claimed. Run the nine scenarios in `13-UAT.md` with Parakeet and Nemotron fast32. Phase 13 and REC-01..03 remain open until the results are recorded.
+Status: complete (2026-10-15). UAT 8/9 PASS by owner; step 9 (no-Nemotron fallback) skipped by owner decision. Live run found callback-jitter fragmentation, fixed in `5c80e5a` and rechecked. Details in `13-UAT.md`.
