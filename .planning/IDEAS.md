@@ -177,6 +177,8 @@ gh api "repos/alexpalyan/whisperclip/compare/cf764eb...wwu-git:main"
 - When a Meet presentation is popped out into its own window, record **only the presentation**; switch back to the
   call window when it closes. Meeting audio continues without gaps.
 - Save to `~/Movies` (app is not sandboxed; `~/Movies` is not TCC-protected — no new entitlement).
+- Processing stays in WhisperClip (Radnyk processing is being moved into the app, 2026-10-15) — the file format is
+  chosen for WhisperClip's own reprocessing, not for Radnyk.
 
 ### Facts from the live check (2026-10-15)
 
@@ -198,7 +200,15 @@ gh api "repos/alexpalyan/whisperclip/compare/cf764eb...wwu-git:main"
   `SCContentSharingPicker` (macOS 14), remember choice per app. Re-evaluate every few seconds and switch with
   `SCStream.updateContentFilter` (macOS 14).
 - Writer: `AVAssetWriter` (`SCRecordingOutput` needs macOS 15; we support 14) — hardware HEVC, fixed output size with
-  letterboxing (source window size changes on switch), 10-15 fps; two audio tracks: mic and system, kept separate.
+  letterboxing (source window size changes on switch), 10-15 fps.
+- Audio format (proposed, for our own reprocessing): **two separate mono tracks — mic and system — never mixed**.
+  Matches the pipeline (mic = always Me; Nemotron/CAM++ run on system only) and lets each track be re-run alone.
+  AAC 48 kHz ~96 kbps per track (~45 MB/h each): fine for ASR/embeddings after resampling to 16 kHz, good for playback.
+  Lossless (ALAC 16 kHz, ~60 MB/h per track) is the alternative if AAC turns out to hurt re-transcription — decide in
+  research with an A/B on one recording.
+- Audio-only mode: the same two tracks in an `.m4a` when video is off (video and audio are separate switches).
+- Time mapping: store the file's start in capture-clock seconds in the meeting, so a bubble can seek to its audio and
+  reprocessing results map back onto existing segments.
 - File: `~/Movies/WhisperClip <date time> — <source>.mov`; linked from the saved meeting; deleting the meeting asks
   whether to delete the video.
 - Settings: on/off (default off), fps/quality, retention; visible recording indicator. Consent: recording others'
@@ -207,7 +217,6 @@ gh api "repos/alexpalyan/whisperclip/compare/cf764eb...wwu-git:main"
 
 ### Open questions
 
-- Format for Radnyk: two separate audio tracks vs one mixed track (Radnyk may expect a single stereo/mono track).
 - Should the presentation switch also apply to Zoom/Teams screen-share windows, or Meet only at first?
 - Later, not this phase: OCR of the active-speaker tile name (Vision) mapped onto the Nemotron timeline → automatic
   speaker names without renaming (extends Phase 14); slide text into Summary/Q&A context. Can run on live frames
