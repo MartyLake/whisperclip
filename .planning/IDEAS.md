@@ -111,3 +111,32 @@ gh api "repos/alexpalyan/whisperclip/compare/cf764eb...wwu-git:main"
 - Mic channel stays "Me" — refine runs on system audio only.
 - Product is already in our dependency (`argmax-oss-swift` exposes `SpeakerKit`); only a target dependency line is needed.
 - Related: `speakerCentroidEmbeddings` / `nearestSpeakerCentroid` as an embedder candidate for Phase 14 speaker identity (see 11.3-RESEARCH).
+
+---
+
+## Live notes and Q&A during a meeting
+
+**Added:** 2026-10-15
+**Status:** idea; no phase assigned
+**Source:** owner saw it in Google AI Edge Foresight — not researched by us yet
+**Earliest sensible time:** after Phase 13 (needs a stable live transcript with speakers); fits naturally next to Phase 12 Chat Bubble UI
+
+### Idea
+
+- **Quick notes mid-call:** the user types a short note ("ask Ivan about the budget", "deadline?") while the meeting is running. The local LLM (Gemma 4 E4B) expands it using the conversation so far — who said what, around which moment — into a full note anchored to the transcript timestamp.
+- **Live Q&A:** ask a question about the meeting while it is still going ("what did they say about the release date?", "what did I miss in the last 5 minutes?").
+- Fully on-device, same privacy story as the rest of the app.
+
+### What already exists
+
+- `MeetingAI.askQuestion(question:meeting:)` — Q&A, but only on a finished `MeetingNote`.
+- `MeetingAI.truncateForLLM` keeps the *beginning* of the transcript (`prefix(20000)`). For a live meeting the *recent* part matters most — the context strategy has to change.
+
+### Open questions
+
+- Context budget for a long meeting: recent window + rolling summary of earlier parts? Reuse summary pieces as the meeting goes?
+- Contention: Gemma running alongside live STT (Parakeet) and Nemotron diarization — latency, memory, thermals on base M-series. Queue/priority so LLM never starves transcription.
+- Transcript is mutable (Reconciler can re-attribute speakers / fix text after the fact) — a note expanded at minute 10 may cite text that later changes. Re-expand, or freeze with the snapshot?
+- Where notes live: `MeetingModels` field, shown inline in the bubble timeline, included in the final summary prompt.
+- UI entry point: hotkey to drop a note without leaving the call app; a small input in the recording overlay?
+- Logging: notes and questions are user content — same `LOG_SENSITIVE_DATA` rule as transcripts.
