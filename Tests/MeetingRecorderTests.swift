@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import WhisperClip
 
 @MainActor
@@ -71,6 +72,7 @@ final class LockIsolated<Value>: @unchecked Sendable {
 
 private final class TimedMeetingSTT: VoiceToTextProtocol {
     let words: [TimedWord]?
+    var inputSampleCounts: [Int] = []
     init(words: [TimedWord]?) { self.words = words }
     func process(filepath: String) async throws -> String { "one two" }
     func processStreamWithTimings(
@@ -78,6 +80,8 @@ private final class TimedMeetingSTT: VoiceToTextProtocol {
         onEvent: @escaping @MainActor @Sendable (StreamingTranscriptionEvent) -> Void,
         onToken: @escaping @MainActor @Sendable (String) -> Void
     ) async throws -> TimedTranscription {
+        let file = try AVAudioFile(forReading: URL(fileURLWithPath: filepath))
+        inputSampleCounts.append(Int(file.length))
         await onToken("one two")
         return TimedTranscription(text: "one two", words: words)
     }
@@ -123,12 +127,45 @@ extension MeetingRecorderTests {
     func testStopWithoutDiarizerKeepsShortFinalPhraseAsOther() async {
         var saved: [MeetingSegment] = []
         let session = MeetingSession(meetingId: UUID()) { segment, _ in saved.append(segment) }
-        let recorder = MeetingRecorder(voiceToText: TimedMeetingSTT(words: nil), session: session)
+        let stt = TimedMeetingSTT(words: nil)
+        let recorder = MeetingRecorder(voiceToText: stt, session: session)
         await recorder.consumeSystemAudio([Float](repeating: 0.5, count: 8_000), at: 3)
         _ = await recorder.stopRecording()
         XCTAssertEqual(saved.count, 1)
         XCTAssertEqual(saved.first?.speaker, .other)
         XCTAssertEqual(saved.first?.endTime, 3.5)
+        XCTAssertEqual(stt.inputSampleCounts, [16_000])
         XCTAssertTrue(session.liveTranscript.allSatisfy { !$0.isPending })
     }
+    func testTinyTailNeverCallsASROrPersistsFailureRow() async {
+        var saved: [MeetingSegment] = []
+        let session = MeetingSession(meetingId: UUID()) { segment, _ in saved.append(segment) }
+        let stt = TimedMeetingSTT(words: nil)
+        let recorder = MeetingRecorder(voiceToText: stt, session: session)
+        await recorder.consumeSystemAudio([Float](repeating: 0.5, count: 3_200), at: 0)
+        _ = await recorder.stopRecording()
+        XCTAssertTrue(stt.inputSampleCounts.isEmpty)
+        XCTAssertTrue(saved.isEmpty)
+        XCTAssertTrue(session.liveTranscript.isEmpty)
+    }
+
+    func testJitterDoesNotPadDiarizerOrFragmentASR() async {
+        var saved: [MeetingSegment] = []
+        let session = MeetingSession(meetingId: UUID()) { segment, _ in saved.append(segment) }
+        let provider = MockStreamingDiarizationProvider()
+        let stt = TimedMeetingSTT(words: nil)
+        let recorder = MeetingRecorder(voiceToText: stt, session: session,
+                                      speakerBufferManager: SpeakerBufferManager(provider: provider))
+        for index in 0..<100 {
+            let jitter = index % 2 == 0 ? 0.0 : 0.004
+            await recorder.consumeSystemAudio([Float](repeating: 0.5, count: 320),
+                                              at: Double(index) * 0.02 + jitter)
+        }
+        _ = await recorder.stopRecording()
+        XCTAssertEqual(provider.appendedSampleCount(), 32_000)
+        XCTAssertEqual(stt.inputSampleCounts, [32_000])
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved.first?.endTime ?? -1, 2, accuracy: 0.0001)
+    }
+
 }

@@ -42,6 +42,7 @@ class MeetingRecorder: NSObject, ObservableObject {
     private var reconcilerTask: Task<Void, Never>?
     private var systemChunker = SystemAudioChunker(thresholdDB: -45)
     private var systemVAD: VADStateMachine?
+    private var systemSampleClock = SystemAudioSampleClock()
     private var systemSpeechActive = false
     private var recordingGeneration = UUID()
     private let systemCaptureClock = CaptureClock()
@@ -181,6 +182,7 @@ class MeetingRecorder: NSObject, ObservableObject {
         systemVAD = VADStateMachine(thresholdDB: microphoneSilenceThresholdDB,
                                     onsetDuration: .milliseconds(100), offsetDuration: .milliseconds(400))
         systemSpeechActive = false
+        systemSampleClock = SystemAudioSampleClock()
         systemCaptureClock.reset()
         recordingGeneration = UUID()
         micFragmentBuffer = []
@@ -490,6 +492,7 @@ class MeetingRecorder: NSObject, ObservableObject {
         activeSpeakerLabel = ""
         systemChunker = SystemAudioChunker(thresholdDB: microphoneSilenceThresholdDB)
         systemSpeechActive = false
+        systemSampleClock = SystemAudioSampleClock()
         systemCaptureClock.reset()
         recordingGeneration = UUID()
         micFragmentBuffer = []
@@ -526,17 +529,30 @@ class MeetingRecorder: NSObject, ObservableObject {
 
     func consumeSystemAudio(_ samples: [Float], at captureTime: TimeInterval) async {
         let generation = recordingGeneration
-        systemCaptureClock.observe(captureTime: captureTime)
-        await handleSystemBatchVAD(SystemAudioBatch(samples: samples, time: captureTime))
+        guard !samples.isEmpty else { return }
+        let alignedTime = systemSampleClock.advance(sampleCount: samples.count, sampleRate: sampleRate, at: captureTime).time
+        systemCaptureClock.observe(captureTime: alignedTime)
+        await handleSystemBatchVAD(SystemAudioBatch(samples: samples, time: alignedTime))
         guard generation == recordingGeneration else { return }
-        if let manager = speakerBufferManager { await manager.onAudioBatch(samples, atTime: captureTime) }
+        if let manager = speakerBufferManager { await manager.onAudioBatch(samples, atTime: alignedTime) }
         guard generation == recordingGeneration else { return }
-        let chunks = systemChunker.append(samples, at: captureTime)
+        let chunks = systemChunker.append(samples, at: alignedTime)
         for chunk in chunks { await enqueueSystemChunk(chunk) }
     }
 
     private func enqueueSystemChunk(_ chunk: SystemAudioChunk, isFinal: Bool = false) async {
         let end = chunk.startTime + Double(chunk.samples.count) / Double(sampleRate)
+        // Ignore sub-300 ms fragments before creating a row or calling ASR.
+        guard chunk.samples.count >= sampleRate * 3 / 10 else {
+            if let id = pendingSystemSegmentId,
+               let segment = session.liveTranscript.first(where: { $0.id == id }),
+               segment.startTime <= end, segment.text.isEmpty {
+                session.removeSegment(id: id)
+                pendingSystemSegmentId = nil
+                ghostSystemCleanupTask?.cancel()
+            }
+            return
+        }
         var id: UUID?
         if let pending = pendingSystemSegmentId,
            let segment = self.session.liveTranscript.first(where: { $0.id == pending }),
@@ -835,7 +851,12 @@ class MeetingRecorder: NSObject, ObservableObject {
 
         do {
             // Write samples to WAV file
-            try writeWAVFile(samples: samples, to: tempURL)
+            // Pad only the ASR input; transcript/timeline bounds retain the real duration.
+            var asrSamples = samples
+            if source == .system, asrSamples.count < sampleRate {
+                asrSamples.append(contentsOf: repeatElement(Float.zero, count: sampleRate - asrSamples.count))
+            }
+            try writeWAVFile(samples: asrSamples, to: tempURL)
 
             let timedTranscription = try await voiceToText.processStreamWithTimings(
                 filepath: tempURL.path,

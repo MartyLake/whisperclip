@@ -5,6 +5,20 @@ struct SystemAudioChunk: Sendable {
     let startTime: TimeInterval
 }
 
+/// Keeps callback jitter out of the audio clock. Only a substantial forward gap
+/// reanchors the stream; otherwise time advances by the number of captured samples.
+struct SystemAudioSampleClock {
+    private(set) var nextTime: TimeInterval?
+    static let gapTolerance: TimeInterval = 0.4
+
+    mutating func advance(sampleCount: Int, sampleRate: Int, at captureTime: TimeInterval) -> (time: TimeInterval, isGap: Bool) {
+        let isGap = nextTime.map { captureTime > $0 + Self.gapTolerance } ?? false
+        let time = isGap ? captureTime : (nextTime ?? captureTime)
+        nextTime = time + Double(sampleCount) / Double(sampleRate)
+        return (time, isGap)
+    }
+}
+
 /// Frame-based pause cutter. Only leading/trailing silence is discarded.
 struct SystemAudioChunker {
     private let sampleRate: Int
@@ -12,7 +26,7 @@ struct SystemAudioChunker {
     private let thresholdDB: Float
     private var samples: [Float] = []
     private var startTime: TimeInterval = 0
-    private var expectedTime: TimeInterval?
+    private var clock = SystemAudioSampleClock()
     private var scanned = 0
     private var silenceStart: Int?
     private var hasSpeech = false
@@ -26,11 +40,11 @@ struct SystemAudioChunker {
     mutating func append(_ input: [Float], at captureTime: TimeInterval) -> [SystemAudioChunk] {
         guard !input.isEmpty else { return [] }
         var output: [SystemAudioChunk] = []
-        if let expectedTime, captureTime > expectedTime + 0.5 / Double(sampleRate) {
-            if let tail = flush() { output.append(tail) }
-        }
-        if samples.isEmpty { startTime = captureTime }
-        expectedTime = captureTime + Double(input.count) / Double(sampleRate)
+        var nextClock = clock
+        let position = nextClock.advance(sampleCount: input.count, sampleRate: sampleRate, at: captureTime)
+        if position.isGap, let tail = flush() { output.append(tail) }
+        clock = nextClock
+        if samples.isEmpty { startTime = position.time }
         samples.append(contentsOf: input)
         while scanned + frameSize <= samples.count {
             let quiet = power(samples[scanned..<(scanned + frameSize)]) < thresholdDB
@@ -73,7 +87,7 @@ struct SystemAudioChunker {
             scanned = 0
             silenceStart = nil
             hasSpeech = false
-            expectedTime = nil
+            clock = SystemAudioSampleClock()
         }
         // A partial final frame may contain speech even if no complete frame did.
         guard !samples.isEmpty,

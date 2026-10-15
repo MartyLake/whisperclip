@@ -66,4 +66,38 @@ final class SystemAudioChunkerTests: XCTestCase {
         XCTAssertEqual(chunker.flush()?.samples, short)
     }
 
+    func testCallbackJitterKeepsPhrasesAndSampleTimes() {
+        var chunker = SystemAudioChunker(thresholdDB: -45)
+        let batchSize = 320
+        var chunks: [SystemAudioChunk] = []
+        // Two seconds of speech, half a second of silence, then two seconds of speech.
+        let input = [Float](repeating: 0.5, count: rate * 2)
+            + [Float](repeating: 0, count: rate / 2)
+            + [Float](repeating: 0.25, count: rate * 2)
+        let jitter: [Double] = [0, 0.004, -0.003, 0.002, -0.005]
+        for index in stride(from: 0, to: input.count, by: batchSize) {
+            let end = min(index + batchSize, input.count)
+            chunks += chunker.append(Array(input[index..<end]),
+                                     at: 10 + Double(index) / Double(rate) + jitter[(index / batchSize) % jitter.count])
+        }
+        if let tail = chunker.flush() { chunks.append(tail) }
+        XCTAssertEqual(chunks.count, 2)
+        XCTAssertEqual(chunks[0].samples.count, rate * 2)
+        XCTAssertEqual(chunks[1].samples.count, rate * 2)
+        XCTAssertEqual(chunks[0].startTime, 10, accuracy: 0.0001)
+        XCTAssertEqual(chunks[1].startTime, 12.5, accuracy: 0.0001)
+        XCTAssertEqual(chunks.flatMap(\.samples).filter { $0 != 0 }, input.filter { $0 != 0 })
+    }
+
+    func testRealGapReanchorsAfterJitter() {
+        var chunker = SystemAudioChunker(thresholdDB: -45)
+        let batch = [Float](repeating: 0.5, count: rate / 2)
+        XCTAssertTrue(chunker.append(batch, at: 5).isEmpty)
+        XCTAssertTrue(chunker.append(batch, at: 5.503).isEmpty)
+        let chunks = chunker.append(batch, at: 6.5)
+        XCTAssertEqual(chunks.count, 1)
+        XCTAssertEqual(chunks.first?.samples.count, rate)
+        XCTAssertEqual(chunker.flush()?.startTime, 6.5)
+    }
+
 }
