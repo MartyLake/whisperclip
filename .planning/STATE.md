@@ -31,7 +31,8 @@ Phase: 11.4 (Nemotron 3 diarizer) — COMPLETE 2026-10-14. UAT PASS (owner). Sys
 Phase: 13 (Reconciler) — COMPLETE 2026-10-15. UAT 8/9 PASS (owner); step 9 (no-Nemotron fallback) skipped by owner decision. Live run exposed callback-jitter fragmentation and `[transcription failed]` rows, fixed in `5c80e5a`. Speaker labels occasionally imprecise — see `13-UAT.md`
 Phase: 12 (Chat Bubble UI) — COMPLETE 2026-10-15. UAT 8/8 PASS (owner). Bubbles in live and saved transcripts; stable speaker colours
 Phase: 14 (Voice Profiles) — IMPLEMENTED plans 01–05 on 2026-10-15: CAM++, local profiles, live/saved naming, automatic matching and Voices Settings. 138 tests pass; Debug build succeeds.
-Next: Plan 14-06 calibration with two real 3+ person meetings, then manual UAT; see `14-UAT.md`. Threshold/margin are still provisional.
+Phase: 15 (Shared Model Storage) — PLANNED 2026-10-15: 4 plans in `.planning/phases/15-shared-model-storage/`; independent of 14, can run in parallel with 14 calibration
+Next: owner tests Phase 14 (14-06 open); execute 15-01 → 15-04
 
 ### Resume 2026-10-13 (after pause since 2026-04-20)
 

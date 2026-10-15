@@ -162,7 +162,7 @@ gh api "repos/alexpalyan/whisperclip/compare/cf764eb...wwu-git:main"
 ## Call recording: video of the call window + audio, saved to ~/Movies
 
 **Added:** 2026-10-15
-**Status:** owner wants it; plan as Phase 15 after Phase 14 closes
+**Status:** owner wants it; plan as the next phase after Phase 14 closes (Phase 15 went to shared model storage)
 
 ### Why
 
@@ -221,3 +221,18 @@ gh api "repos/alexpalyan/whisperclip/compare/cf764eb...wwu-git:main"
 - Later, not this phase: OCR of the active-speaker tile name (Vision) mapped onto the Nemotron timeline → automatic
   speaker names without renaming (extends Phase 14); slide text into Summary/Q&A context. Can run on live frames
   without saving video.
+
+---
+
+## Reuse model copies from LM Studio / Hugging Face cache
+
+**Added:** 2026-10-15
+**Status:** idea; follow-up to Phase 15 (shared model storage)
+
+- The same MLX repo (e.g. `mlx-community/gemma-4-e4b-it-4bit`, 4.8 GB) can exist in WhisperClip, Radnyk's
+  `~/.cache/huggingface/hub` and LM Studio (`downloadsFolder` in `~/.lmstudio/settings.json`). Owner reports up to three
+  copies of Gemma on one Mac.
+- Shape: before downloading, look for a complete copy in known locations and load it read-only from there; never
+  write into foreign folders; fall back to our own copy if the foreign one disappears or changes.
+- Open: how to verify completeness (file list + sizes from the Hub manifest), HF cache symlink layout (`snapshots/` →
+  `blobs/`), what happens when LM Studio updates or deletes the model mid-session.

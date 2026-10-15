@@ -357,6 +357,29 @@ Plans:
 - [x] 14-05-PLAN.md — Voices tab in Settings: list, rename, merge, delete (VOICE-04)
 - [ ] 14-06-PLAN.md — Threshold calibration + manual verification (VOICE-01..04)
 
+#### Phase 15: Shared Model Storage
+
+**Goal**: Models are downloaded once per Mac, not once per macOS user — one shared folder that every user can read, update and delete without admin rights
+**Depends on**: none (independent of Phase 14)
+**Requirements**: MODELS-01, MODELS-02, MODELS-03, MODELS-04
+**Scope notes (2026-10-15)**:
+- Measured ≈ 6.3 GB of models per user today (Gemma 4 E4B alone 4.8 GB); multi-account use without re-downloading is why Radnyk was started
+- Location `/Users/Shared/WhisperClip/Models` with an inherited `group:staff` ACL (no admin prompt); `/Library/Application Support` rejected — needs admin to create, same ACL work anyway
+- Per-user data (meetings, voice profiles, settings, tokenizers, diagnostics) stays per user. Reusing LM Studio / HF-cache copies is a separate idea
+**Success Criteria** (what must be TRUE):
+
+1. All models live in the shared folder; none remain in per-user folders after migration
+2. A second macOS user uses every model with no download
+3. Any user can update or delete a model downloaded by another user, without admin rights
+4. Already-downloaded models are moved, not re-downloaded; per-user data stays per user
+**Plans**: 4 plans
+
+Plans:
+- [ ] 15-01-PLAN.md — `SharedModelStore`: root + inherited ACL, permission repair, cross-user lock, TDD (MODELS-01, MODELS-02)
+- [ ] 15-02-PLAN.md — All model download/load paths on the shared root; tokenizers etc. stay per user (MODELS-01, MODELS-02)
+- [ ] 15-03-PLAN.md — Migration of existing per-user models by move; Settings/onboarding text (MODELS-03, MODELS-04)
+- [ ] 15-04-PLAN.md — Manual verification with two macOS accounts (MODELS-01..04)
+
 ---
 
 ## Ideas
@@ -385,6 +408,7 @@ Unscheduled ideas live in `.planning/IDEAS.md` (currently: Parakeet model folder
 | 13. Reconciler — Async Enrichment    | v1.2      | 5/5            | Complete    | 2026-10-15 |
 | 12. Chat Bubble UI                   | v1.2      | 3/3            | Complete    | 2026-10-15 |
 | 14. Voice Profiles                   | v1.2      | 5/6            | Calibration/UAT pending | -          |
+| 15. Shared Model Storage             | v1.2      | 0/4            | Planned     | -          |
 
 \* Code complete and focused verification green; warning-clean build remains open carry-over work.
 
