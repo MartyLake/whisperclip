@@ -82,3 +82,32 @@ Assessed from commit titles and file lists only — the code itself has not been
 gh api "repos/alexpalyan/whisperclip/compare/cf764eb...ColemanDunn:main"
 gh api "repos/alexpalyan/whisperclip/compare/cf764eb...wwu-git:main"
 ```
+
+---
+
+## Post-meeting speaker refine pass via SpeakerKit
+
+**Added:** 2026-10-15
+**Status:** idea; no phase assigned
+**Earliest sensible time:** after Phase 13 (needs the Reconciler to apply a corrected timeline)
+
+### Idea
+
+- After a meeting ends, run Argmax `SpeakerKit` (pyannote v3/v4 segmenter + embedder, VBx clustering) over the whole system-audio track and apply the result to the stored meeting through the Reconciler.
+- Complements Nemotron 3, does not replace it: Nemotron stays the live/streaming diarizer; the refine pass only corrects the saved transcript.
+- Expected win: global clustering over the full recording fixes live drift — one speaker split into two ids, or two similar voices merged.
+
+### Why not a user-selectable alternative to Nemotron
+
+- `SpeakerKit` in `argmax-oss-swift` 1.1.x is batch-only: `diarize(audioArray:)` takes the full audio. No streaming API; Sortformer is mentioned in `Diarizer.swift` comments but is not in the OSS package.
+- Sliding-window re-runs to fake streaming would give unstable speaker ids between runs — the problem Phase 11.4 moved away from.
+- It is the same pyannote family as the removed FluidAudio `DiarizerManager` (11.4-CONTEXT: "deleted, not kept as a fallback").
+- A setting would double providers, model downloads, Reconciler branches and tests for a choice users cannot judge.
+
+### Open questions
+
+- Cost on a 1-hour meeting: time, peak memory (whole `[Float]` in RAM — ~230 MB at 16 kHz), model download size.
+- Mapping SpeakerKit ids onto existing live ids (overlap-based matching vs. centroid distance) without breaking user-renamed speakers.
+- Mic channel stays "Me" — refine runs on system audio only.
+- Product is already in our dependency (`argmax-oss-swift` exposes `SpeakerKit`); only a target dependency line is needed.
+- Related: `speakerCentroidEmbeddings` / `nearestSpeakerCentroid` as an embedder candidate for Phase 14 speaker identity (see 11.3-RESEARCH).
