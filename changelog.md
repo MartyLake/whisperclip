@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.51] - 2026-11-01
+
+### Added
+- **Live speaker separation**: Other meeting participants are separated in real time with Nemotron 3 and shown as chat bubbles, with speaker renaming.
+- **Voice profiles**: Save local voice samples so known speakers are recognised in later meetings.
+- **Shared model storage**: Downloaded models can be shared between macOS users, with confirmation before a shared model is deleted.
+- **Streaming transcription**: Live previews while speaking, using WhisperKit or Parakeet.
+- **Gemma 4 E4B**: New local LLM option; FluidAudio, MLX and WhisperKit upgraded.
+
+### Fixed
+- **Audio lost when switching devices**: Meeting capture now recovers when headphones connect or disconnect mid-recording. The microphone is rebuilt on the new device, a watchdog restarts it if buffers stop arriving, and system audio restarts if its stream stops.
+- **Release app missing resources**: All SwiftPM resource bundles are now embedded in the app, not just MLX, which prevents a crash on machines other than the build machine.
+
 ## [1.0.50] - 2026-02-08
 
 ### Added
