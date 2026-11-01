@@ -111,8 +111,13 @@ final class VoiceProfileStore: ObservableObject {
     }
 
     private func protect(_ url: URL) throws {
-        try FileManager.default.setAttributes([.posixPermissions: 0o600,
-                                               .protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        // Volumes without data protection reject this with EINVAL; the permissions above still apply.
+        do {
+            try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: url.path)
+        } catch {
+            Logger.log("File protection unavailable for voice profiles on this volume", log: Logger.general)
+        }
     }
 
     private func persist(_ updated: [VoiceProfile]) throws {
