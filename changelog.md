@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.51] - 2026-11-01
+## [1.1.0] - 2026-11-01
 
 ### Added
 - **Live speaker separation**: Other meeting participants are separated in real time with Nemotron 3 and shown as chat bubbles, with speaker renaming.
