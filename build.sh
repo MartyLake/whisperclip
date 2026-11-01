@@ -9,7 +9,20 @@ APP_BUNDLE_ID="com.whisperclip"
 VERSION=$(cat version)
 BUILD_DIR="build"
 RELEASE_DIR="release"
-SIGNING_IDENTITY="Developer ID Application: $DEV_ID_APPLICATION"
+
+# AD_HOC_SIGNING=1 builds without a Developer ID: the app works but Gatekeeper blocks it on
+# first launch and it cannot be notarized.
+AD_HOC_SIGNING="${AD_HOC_SIGNING:-0}"
+# SKIP_DMG_LAYOUT=1 skips the Finder scripting, which needs a GUI session (e.g. on CI).
+SKIP_DMG_LAYOUT="${SKIP_DMG_LAYOUT:-0}"
+
+if [[ "$AD_HOC_SIGNING" == "1" ]]; then
+  SIGNING_IDENTITY="-"
+  TIMESTAMP_FLAG="--timestamp=none"
+else
+  SIGNING_IDENTITY="Developer ID Application: $DEV_ID_APPLICATION"
+  TIMESTAMP_FLAG="--timestamp"
+fi
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -20,9 +33,11 @@ error_exit() {
 
 # ─── Verify prerequisites ──────────────────────────────────────────────────────
 
-echo "Verifying code-signing identity: $SIGNING_IDENTITY"
-if ! security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
-  error_exit "Signing identity '$SIGNING_IDENTITY' not found in keychain."
+if [[ "$AD_HOC_SIGNING" != "1" ]]; then
+  echo "Verifying code-signing identity: $SIGNING_IDENTITY"
+  if ! security find-identity -v -p codesigning | grep -q "$SIGNING_IDENTITY"; then
+    error_exit "Signing identity '$SIGNING_IDENTITY' not found in keychain."
+  fi
 fi
 
 # ─── Clean & prepare directories ───────────────────────────────────────────────
@@ -55,8 +70,13 @@ cp "$BUILD_DIR/Build/Products/Release/$APP_NAME" "$BUNDLE_PATH/Contents/MacOS/$A
 echo "Copying icon file into bundle…"
 cp "WhisperClip.icns" "$BUNDLE_PATH/Contents/Resources/WhisperClip.icns"
 
-echo "Embedding mlx-swift bundle…"
-cp -R "$BUILD_DIR/Build/Products/Release/mlx-swift_Cmlx.bundle" "$BUNDLE_PATH/Contents/Resources/mlx-swift_Cmlx.bundle"
+echo "Embedding SwiftPM resource bundles…"
+# Bundle.module only falls back to the build directory on this machine, so a bundle that is
+# not embedded crashes the app everywhere else.
+for resource_bundle in "$BUILD_DIR"/Build/Products/Release/*.bundle; do
+  cp -R "$resource_bundle" "$BUNDLE_PATH/Contents/Resources/"
+done
+[[ -d "$BUNDLE_PATH/Contents/Resources/mlx-swift_Cmlx.bundle" ]] || error_exit "mlx-swift bundle not found."
 
 echo "Writing Info.plist…"
 cat > "$BUNDLE_PATH/Contents/Info.plist" << EOF
@@ -129,7 +149,7 @@ echo "Signing bundle with runtime options and entitlements…"
 xcrun codesign --force \
                --options runtime \
                --deep \
-               --timestamp \
+               "$TIMESTAMP_FLAG" \
                --entitlements WhisperClip.entitlements \
                --sign "$SIGNING_IDENTITY" \
                --verbose=4 \
@@ -146,6 +166,20 @@ DMG_PATH="$RELEASE_DIR/${APP_NAME}-${VERSION}.dmg"
 echo "Setting up DMG structure…"
 mkdir -p "$DMG_TEMP_DIR"
 cp -R "$BUNDLE_PATH" "$DMG_TEMP_DIR/"
+
+if [[ "$SKIP_DMG_LAYOUT" == "1" ]]; then
+  echo "Creating DMG at '$DMG_PATH'…"
+  ln -s /Applications "$DMG_TEMP_DIR/Applications"
+  hdiutil create -volname "${APP_NAME} ${VERSION}" \
+    -srcfolder "$DMG_TEMP_DIR" \
+    -ov \
+    -format UDZO \
+    -imagekey zlib-level=9 \
+    "$DMG_PATH"
+  rm -rf "$DMG_TEMP_DIR"
+  echo "✅ Build complete! DMG available at: $DMG_PATH"
+  exit 0
+fi
 
 echo "Creating DMG with custom layout…"
 # Create temporary DMG
