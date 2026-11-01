@@ -11,7 +11,10 @@ class MeetingStorage: ObservableObject {
     @Published private(set) var meetings: [MeetingNote] = []
     @Published var currentMeeting: MeetingNote?
     
-    private init() {
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         loadMeetings()
     }
     
@@ -141,6 +144,30 @@ class MeetingStorage: ObservableObject {
         currentMeeting = nil
     }
     
+    func clearVoiceEmbeddings(profileID: UUID) {
+        editVoices { voice in
+            if voice.profileID == profileID { voice.embedding = nil; voice.profileID = nil }
+        }
+    }
+
+    func clearAllVoiceEmbeddings() {
+        editVoices { voice in voice.embedding = nil; voice.profileID = nil }
+    }
+
+    func relinkVoiceProfile(_ source: UUID, to target: UUID) {
+        editVoices { voice in
+            if voice.profileID == source { voice.profileID = target }
+        }
+    }
+
+    private func editVoices(_ edit: (inout MeetingVoice) -> Void) {
+        for index in meetings.indices {
+            for voice in meetings[index].voices.indices { edit(&meetings[index].voices[voice]) }
+        }
+        if let id = currentMeeting?.id { currentMeeting = getMeeting(id) }
+        saveMeetings()
+    }
+
     // MARK: - Queries
     
     func getMeeting(_ id: UUID) -> MeetingNote? {
@@ -178,7 +205,7 @@ class MeetingStorage: ObservableObject {
     // MARK: - Persistence
     
     private func loadMeetings() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey) else { return }
+        guard let data = defaults.data(forKey: storageKey) else { return }
         do {
             meetings = try JSONDecoder().decode([MeetingNote].self, from: data)
             recoverInterruptedMeetingsIfNeeded()
@@ -217,7 +244,7 @@ class MeetingStorage: ObservableObject {
         
         do {
             let data = try JSONEncoder().encode(meetings)
-            UserDefaults.standard.set(data, forKey: storageKey)
+            defaults.set(data, forKey: storageKey)
         } catch {
             Logger.log("Failed to save meetings: \(error)", log: Logger.general, type: .error)
         }

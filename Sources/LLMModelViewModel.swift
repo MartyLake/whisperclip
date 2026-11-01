@@ -7,6 +7,7 @@ class LLMModelViewModel: ObservableObject {
     @Published var llmDownloadInProgress: Bool = false
     @Published var llmDownloadModelName: String? = nil
     @Published var llmDownloadProgress: Double = 0
+    @Published var llmDownloadWaitingForOtherUser = false
     @Published var totalModelsSize: Int64 = 0
 
     init(store: SettingsStore = .shared) {
@@ -17,6 +18,7 @@ class LLMModelViewModel: ObservableObject {
         llmDownloadInProgress = true
         llmDownloadModelName = modelName
         llmDownloadProgress = 0
+        llmDownloadWaitingForOtherUser = false
 
         Task {
             let modelID = "\(CurrentLLMModelRepo)/\(modelName)"
@@ -24,10 +26,13 @@ class LLMModelViewModel: ObservableObject {
                 let _ = try await ModelStorage.shared.downloadModel(
                     modelRepo: modelID,
                     modelName: "",
-                    progress: { [weak self] progress in
+                    progress: { progress in
                         Task { @MainActor in
-                            self?.llmDownloadProgress = progress
+                            self.llmDownloadProgress = progress
                         }
+                    },
+                    onWait: {
+                        Task { @MainActor in self.llmDownloadWaitingForOtherUser = true }
                     }
                 )
                 try await ModelStorage.shared.preLoadModel(modelRepo: modelID, modelName: "")
@@ -36,6 +41,7 @@ class LLMModelViewModel: ObservableObject {
                     llmDownloadInProgress = false
                     llmDownloadModelName = nil
                     llmDownloadProgress = 0
+                    llmDownloadWaitingForOtherUser = false
                     refreshModelsSize()
                 }
             } catch {
@@ -44,6 +50,7 @@ class LLMModelViewModel: ObservableObject {
                     llmDownloadInProgress = false
                     llmDownloadModelName = nil
                     llmDownloadProgress = 0
+                    llmDownloadWaitingForOtherUser = false
                 }
             }
         }

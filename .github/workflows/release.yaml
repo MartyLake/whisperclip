@@ -1,0 +1,113 @@
+name: Release
+
+# Publishes a GitHub release when a tag matching the `version` file is pushed:
+#   git tag v$(cat version) && git push origin v$(cat version)
+#
+# With all Developer ID secrets set the DMG is signed and notarized. With none of them it is
+# ad-hoc signed and published as a prerelease, which Gatekeeper blocks on first launch.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+
+    env:
+      MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      DEV_ID_APPLICATION: ${{ secrets.DEV_ID_APPLICATION }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      TEAM_ID: ${{ secrets.TEAM_ID }}
+      APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Check tag matches version file
+      run: |
+        VERSION="$(cat version)"
+        if [[ "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
+          echo "::error::Tag $GITHUB_REF_NAME does not match version file ($VERSION)"
+          exit 1
+        fi
+        echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+    - name: Choose signing mode
+      run: |
+        missing=0
+        for name in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD DEV_ID_APPLICATION APPLE_ID TEAM_ID APP_PASSWORD; do
+          [[ -n "${!name}" ]] || missing=$((missing + 1))
+        done
+        if [[ "$missing" == 6 ]]; then
+          echo "::warning::No Developer ID secrets set; publishing an ad-hoc signed prerelease"
+          echo "SIGNED=0" >> "$GITHUB_ENV"
+        elif [[ "$missing" == 0 ]]; then
+          echo "SIGNED=1" >> "$GITHUB_ENV"
+        else
+          echo "::error::Developer ID secrets are only partially set"
+          exit 1
+        fi
+
+    - name: Run tests
+      run: swift test --parallel
+
+    - name: Import Developer ID certificate
+      if: env.SIGNED == '1'
+      run: |
+        KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+        KEYCHAIN_PASSWORD="$(uuidgen)"
+        echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+        security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security set-keychain-settings -lut 21600 "$KEYCHAIN"
+        security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security import "$RUNNER_TEMP/certificate.p12" -k "$KEYCHAIN" \
+          -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+        security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+        security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+        rm "$RUNNER_TEMP/certificate.p12"
+
+    - name: Build DMG
+      run: |
+        if [[ "$SIGNED" == "1" ]]; then
+          SKIP_DMG_LAYOUT=1 ./build.sh
+        else
+          AD_HOC_SIGNING=1 SKIP_DMG_LAYOUT=1 ./build.sh
+        fi
+
+    - name: Notarize DMG
+      if: env.SIGNED == '1'
+      run: |
+        DMG="release/WhisperClip-$VERSION.dmg"
+        xcrun notarytool submit "$DMG" \
+          --apple-id "$APPLE_ID" \
+          --password "$APP_PASSWORD" \
+          --team-id "$TEAM_ID" \
+          --wait
+        xcrun stapler staple "$DMG"
+
+    - name: Publish GitHub release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        NOTES="$RUNNER_TEMP/notes.md"
+        awk -v version="$VERSION" '
+          index($0, "## [" version "]") == 1 { found = 1; next }
+          found && /^## \[/ { exit }
+          found { print }
+        ' changelog.md > "$NOTES"
+
+        PRERELEASE=()
+        if [[ "$SIGNED" != "1" ]]; then
+          PRERELEASE=(--prerelease)
+          printf '\n> This build is not notarized. macOS blocks it on first launch: open it from System Settings > Privacy & Security > Open Anyway.\n' >> "$NOTES"
+        fi
+
+        gh release create "$GITHUB_REF_NAME" "release/WhisperClip-$VERSION.dmg" \
+          --title "WhisperClip $VERSION" \
+          --notes-file "$NOTES" \
+          "${PRERELEASE[@]}"

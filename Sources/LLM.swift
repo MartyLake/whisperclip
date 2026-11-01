@@ -61,6 +61,11 @@ class LLM: LLMProtocol {
                 return String(result.dropLast("<end_of_turn>".count))
             }
             return result
+        case MlxCommunityRepo + "/" + Gemma_4_E4B_it_4bit:
+            if result.hasSuffix("<turn|>") {
+                return String(result.dropLast("<turn|>".count))
+            }
+            return result
         default:
             return result
         }

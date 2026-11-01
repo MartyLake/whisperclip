@@ -132,12 +132,13 @@ struct OnboardingView: View {
             • Optimized for Apple Neural Engine
             • Supports 25 European languages
             • Fast inference on Apple Silicon
+            • Installs both offline and real-time Parakeet models
 
             This is the default speech-to-text engine.
             """,
             imageName: "waveform.badge.plus",
             buttonText: "Download",
-            source: "https://huggingface.co/\(ParakeetModelRepo)/\(ParakeetModelName)",
+            source: "https://huggingface.co/FluidInference/parakeet-realtime-eou-120m-coreml",
             action: { [self] progress in
                 Task {
                     do {
@@ -276,7 +277,7 @@ struct OnboardingView: View {
             progressBar: true
         ),
         OnboardingStep(
-            title: "Download Speaker ID Model (Optional)",
+            title: "Download Speaker Separation Model (Optional)",
             description: """
             Optional for Meeting Notes:
             • Speaker diarization (who said what)
@@ -286,7 +287,7 @@ struct OnboardingView: View {
             """,
             imageName: "person.2.wave.2.fill",
             buttonText: "Download",
-            source: "https://huggingface.co/FluidInference/speaker-diarization-coreml",
+            source: "https://huggingface.co/FluidInference/nemotron-3-diarization-coreml",
             action: { [self] progress in
                 Task {
                     do {
@@ -295,7 +296,7 @@ struct OnboardingView: View {
                             startSmoothProgressAnimation()
                         }
                         
-                        try await ModelStorage.shared.downloadDiarizerModels { downloadProgress in
+                        try await ModelStorage.shared.downloadNemotron3Models(for: .defaultPreset) { downloadProgress in
                             Logger.log("Downloading diarizer model: \(downloadProgress)", log: Logger.general)
                             Task { @MainActor in
                                 if downloadProgress >= 0.90 {
@@ -311,21 +312,21 @@ struct OnboardingView: View {
                             progress(1.0)
                         }
                     } catch {
-                        Logger.log("Failed to download diarizer model: \(error)", log: Logger.general, type: .error)
+                        Logger.log("Failed to download Nemotron 3 diarization model", log: Logger.general, type: .error)
                         await MainActor.run {
                             stopCompilationAnimation()
                             stepProgress = 0  // Reset progress to allow retry or skip
                         }
                         do {
-                            try ModelStorage.shared.deleteDiarizerModels()
+                            try ModelStorage.shared.deleteNemotron3Models(for: .defaultPreset)
                         } catch {
-                            Logger.log("Failed to delete diarizer model: \(error)", log: Logger.general, type: .error)
+                            Logger.log("Failed to clean up incomplete Nemotron 3 model download", log: Logger.general, type: .error)
                         }
                     }
                 }
             },
             skipCondition: {
-                ModelStorage.shared.diarizerModelsExist()
+                ModelStorage.shared.nemotron3ModelsExist(for: .defaultPreset)
             },
             progressBar: true
         ),

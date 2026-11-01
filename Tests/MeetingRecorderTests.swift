@@ -1,99 +1,9 @@
 import XCTest
+import AVFoundation
 @testable import WhisperClip
-
-actor MockTranscriptionQueue {
-    private var enqueuedBuffers: [ClosedSpeakerBuffer] = []
-    private var processorCallCount = 0
-
-    func enqueue(
-        buffer: ClosedSpeakerBuffer,
-        processor: @escaping @MainActor (ClosedSpeakerBuffer) async -> Void
-    ) async {
-        enqueuedBuffers.append(buffer)
-        await processor(buffer)
-        processorCallCount += 1
-    }
-
-    func bufferedItems() -> [ClosedSpeakerBuffer] {
-        enqueuedBuffers
-    }
-
-    func callCount() -> Int {
-        processorCallCount
-    }
-
-    func drain() async {
-    }
-}
 
 @MainActor
 final class MeetingRecorderTests: XCTestCase {
-
-    func testConsumerLoopProcessesBuffers() async throws {
-        var continuation: AsyncStream<ClosedSpeakerBuffer>.Continuation!
-        let stream = AsyncStream<ClosedSpeakerBuffer> { captured in
-            continuation = captured
-        }
-
-        let queue = MockTranscriptionQueue()
-        var processedLabels: [String] = []
-
-        let consumerTask = Task {
-            for await buffer in stream {
-                await queue.enqueue(buffer: buffer) { buffered in
-                    processedLabels.append(buffered.speakerLabel)
-                }
-            }
-        }
-
-        continuation.yield(
-            ClosedSpeakerBuffer(samples: [0.1, 0.2], speakerLabel: "Speaker 1", startTime: 0.0)
-        )
-        continuation.yield(
-            ClosedSpeakerBuffer(samples: [0.3, 0.4], speakerLabel: "Speaker 2", startTime: 1.0)
-        )
-        continuation.finish()
-
-        _ = await consumerTask.value
-
-        let enqueuedBuffers = await queue.bufferedItems()
-        XCTAssertEqual(enqueuedBuffers.count, 2)
-        XCTAssertEqual(processedLabels, ["Speaker 1", "Speaker 2"])
-    }
-
-    func testActiveSpeakerLabelUpdatesBeforeProcessorCall() async throws {
-        var continuation: AsyncStream<ClosedSpeakerBuffer>.Continuation!
-        let stream = AsyncStream<ClosedSpeakerBuffer> { captured in
-            continuation = captured
-        }
-
-        var activeSpeakerLabel = ""
-        var labelAtProcessorCallTime: String?
-
-        let consumerTask = Task { @MainActor in
-            for await buffer in stream {
-                activeSpeakerLabel = buffer.speakerLabel
-                labelAtProcessorCallTime = activeSpeakerLabel
-            }
-        }
-
-        continuation.yield(
-            ClosedSpeakerBuffer(
-                samples: Array(repeating: 0.5, count: 16_000),
-                speakerLabel: "Speaker 1",
-                startTime: 0.0
-            )
-        )
-        continuation.finish()
-
-        _ = await consumerTask.value
-
-        XCTAssertEqual(activeSpeakerLabel, "Speaker 1")
-        XCTAssertEqual(labelAtProcessorCallTime, "Speaker 1")
-    }
-
-    // MARK: - GAP-09-04: Mic source sets activeSpeakerLabel to Me
-
     func testMicrophoneSourceSetsActiveSpeakerLabelToMe() {
         // Contract: microphone audio always identifies as "Me" for waveform color.
         // The onAudioChunk callback sets activeSpeakerLabel = Speaker.me.displayName
@@ -116,137 +26,6 @@ final class MeetingRecorderTests: XCTestCase {
         let micSpeaker = AudioSource.microphone.speaker
         XCTAssertEqual(micSpeaker, .me, "AudioSource.microphone.speaker must be .me")
         XCTAssertEqual(micSpeaker.displayName, "Me", "Mic speaker displayName must be 'Me'")
-    }
-
-    func testTeardownSequenceStopThenConsumeThenDrain() async throws {
-        let diarizer = MockDiarizationProvider()
-        diarizer.setResults([makeDiarizationResult(speakerId: "SPEAKER_00", durationSeconds: 1.0)])
-
-        let manager = SpeakerBufferManager(
-            diarizer: diarizer,
-            sampleRate: 16_000,
-            pollingInterval: 50_000_000
-        )
-
-        let completion = expectation(description: "consumer completed")
-        let received = LockIsolated<[ClosedSpeakerBuffer]>([])
-
-        await manager.start()
-
-        let consumerTask = Task {
-            for await buffer in manager.buffers {
-                received.withValue { values in
-                    values.append(buffer)
-                }
-            }
-            completion.fulfill()
-        }
-
-        await manager.onAudioBatch(Array(repeating: 0.1, count: 16_000), atTime: 0.0)
-        try await Task.sleep(nanoseconds: 200_000_000)
-
-        await manager.stop()
-        _ = await consumerTask.value
-        await fulfillment(of: [completion], timeout: 1.0)
-
-        let flushedBuffers = received.value
-        XCTAssertFalse(flushedBuffers.isEmpty)
-        XCTAssertEqual(flushedBuffers.first?.speakerLabel, "Speaker 1")
-    }
-
-    func testTranscriptionQueueBufferOverload() async throws {
-        let queue = TranscriptionQueue()
-        var processedBuffers: [ClosedSpeakerBuffer] = []
-        let buffer = ClosedSpeakerBuffer(
-            samples: Array(repeating: 0.1, count: 8_000),
-            speakerLabel: "Speaker 1",
-            startTime: 0.0
-        )
-
-        await queue.enqueue(buffer: buffer) { processed in
-            processedBuffers.append(processed)
-        }
-        await queue.drain()
-
-        XCTAssertEqual(processedBuffers.count, 1)
-        XCTAssertEqual(processedBuffers.first?.speakerLabel, "Speaker 1")
-    }
-
-    // MARK: - GAP-08-01: System audio fallback when diarizer is unavailable
-
-    func testSystemAudioFallbackWhenDiarizerUnavailable() async throws {
-        let sampleRate = 16_000
-        let chunkDuration = 5.0
-        let chunkSampleCount = Int(Double(sampleRate) * chunkDuration)
-
-        var fallbackBuffer: [Float] = []
-        var fallbackStartTime: TimeInterval = 0
-        var dispatchedChunks: [(source: AudioSource, samples: [Float], startTime: TimeInterval)] = []
-
-        let batchSize = 16_000
-        for batchIndex in 0..<6 {
-            let time = TimeInterval(batchIndex)
-            let samples = Array(repeating: Float(0.1), count: batchSize)
-
-            if fallbackBuffer.isEmpty {
-                fallbackStartTime = time
-            }
-
-            fallbackBuffer.append(contentsOf: samples)
-
-            while fallbackBuffer.count >= chunkSampleCount {
-                dispatchedChunks.append((
-                    source: .system,
-                    samples: Array(fallbackBuffer.prefix(chunkSampleCount)),
-                    startTime: fallbackStartTime
-                ))
-                fallbackBuffer.removeFirst(chunkSampleCount)
-                if fallbackBuffer.isEmpty {
-                    fallbackStartTime = 0
-                } else {
-                    fallbackStartTime += chunkDuration
-                }
-            }
-        }
-
-        XCTAssertEqual(
-            dispatchedChunks.count,
-            1,
-            "Should dispatch one 5s chunk after accumulating 80,000+ samples"
-        )
-        XCTAssertEqual(
-            dispatchedChunks[0].samples.count,
-            80_000,
-            "Dispatched chunk should contain 5s of audio"
-        )
-        XCTAssertEqual(
-            dispatchedChunks[0].startTime,
-            0.0,
-            "First chunk should start at time 0"
-        )
-        XCTAssertEqual(
-            dispatchedChunks[0].source,
-            .system,
-            "Fallback chunks must be .system source"
-        )
-
-        let speaker = AudioSource.system.speaker
-        XCTAssertEqual(
-            speaker,
-            .other,
-            "System audio source must map to .other speaker for fallback attribution"
-        )
-
-        XCTAssertEqual(
-            fallbackBuffer.count,
-            16_000,
-            "Remaining samples should stay in buffer for flush on stop"
-        )
-        XCTAssertGreaterThanOrEqual(
-            dispatchedChunks[0].samples.count,
-            sampleRate * 2,
-            "Dispatched chunk must meet the 2s minimum sample threshold for ASR"
-        )
     }
 
     func testTranscriptionQueueProcessesSystemSourceChunks() async throws {
@@ -289,4 +68,104 @@ final class LockIsolated<Value>: @unchecked Sendable {
         defer { lock.unlock() }
         body(&storage)
     }
+}
+
+private final class TimedMeetingSTT: VoiceToTextProtocol {
+    let words: [TimedWord]?
+    var inputSampleCounts: [Int] = []
+    init(words: [TimedWord]?) { self.words = words }
+    func process(filepath: String) async throws -> String { "one two" }
+    func processStreamWithTimings(
+        filepath: String,
+        onEvent: @escaping @MainActor @Sendable (StreamingTranscriptionEvent) -> Void,
+        onToken: @escaping @MainActor @Sendable (String) -> Void
+    ) async throws -> TimedTranscription {
+        let file = try AVAudioFile(forReading: URL(fileURLWithPath: filepath))
+        inputSampleCounts.append(Int(file.length))
+        await onToken("one two")
+        return TimedTranscription(text: "one two", words: words)
+    }
+}
+
+extension MeetingRecorderTests {
+    func testStopDrainsASRThenTimelineAndPersistsSplitExactlyOnce() async {
+        var saved: [MeetingSegment] = []
+        let session = MeetingSession(meetingId: UUID()) { segment, _ in saved.append(segment) }
+        let probabilities = (0..<200).flatMap { frame -> [Float] in frame < 100 ? [0.9, 0] : [0, 0.9] }
+        let provider = MockStreamingDiarizationProvider(finishResults: [
+            StreamingDiarizationChunk(probabilities: probabilities, frameCount: 200, numSpeakers: 2)
+        ])
+        let recorder = MeetingRecorder(
+            voiceToText: TimedMeetingSTT(words: [.init(text: "one", start: 0.1, end: 0.8),
+                                                .init(text: "two", start: 1.2, end: 1.9)]),
+            session: session, speakerBufferManager: SpeakerBufferManager(provider: provider))
+        await recorder.consumeSystemAudio([Float](repeating: 0.5, count: 32_000), at: 5)
+        _ = await recorder.stopRecording()
+        XCTAssertEqual(saved.map(\.text), ["one", "two"])
+        XCTAssertEqual(saved.map(\.speaker), [.labeled("Speaker 1"), .labeled("Speaker 2")])
+        XCTAssertEqual(session.liveTranscript.map(\.id), saved.map(\.id))
+        XCTAssertTrue(session.liveTranscript.allSatisfy { !$0.isPending })
+        XCTAssertEqual(saved.first?.startTime, 5)
+        XCTAssertEqual(saved.last?.endTime, 7)
+    }
+
+    func testStopWithoutWordTimingsUsesMajorityAndDoesNotSplit() async {
+        var saved: [MeetingSegment] = []
+        let session = MeetingSession(meetingId: UUID()) { segment, _ in saved.append(segment) }
+        let probabilities = (0..<200).flatMap { frame -> [Float] in frame < 120 ? [0.9, 0] : [0, 0.9] }
+        let manager = SpeakerBufferManager(provider: MockStreamingDiarizationProvider(finishResults: [
+            StreamingDiarizationChunk(probabilities: probabilities, frameCount: 200, numSpeakers: 2)
+        ]))
+        let recorder = MeetingRecorder(voiceToText: TimedMeetingSTT(words: nil), session: session, speakerBufferManager: manager)
+        await recorder.consumeSystemAudio([Float](repeating: 0.5, count: 32_000), at: 0)
+        _ = await recorder.stopRecording()
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved.first?.text, "one two")
+        XCTAssertEqual(saved.first?.speaker, .labeled("Speaker 1"))
+    }
+
+    func testStopWithoutDiarizerKeepsShortFinalPhraseAsOther() async {
+        var saved: [MeetingSegment] = []
+        let session = MeetingSession(meetingId: UUID()) { segment, _ in saved.append(segment) }
+        let stt = TimedMeetingSTT(words: nil)
+        let recorder = MeetingRecorder(voiceToText: stt, session: session)
+        await recorder.consumeSystemAudio([Float](repeating: 0.5, count: 8_000), at: 3)
+        _ = await recorder.stopRecording()
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved.first?.speaker, .other)
+        XCTAssertEqual(saved.first?.endTime, 3.5)
+        XCTAssertEqual(stt.inputSampleCounts, [16_000])
+        XCTAssertTrue(session.liveTranscript.allSatisfy { !$0.isPending })
+    }
+    func testTinyTailNeverCallsASROrPersistsFailureRow() async {
+        var saved: [MeetingSegment] = []
+        let session = MeetingSession(meetingId: UUID()) { segment, _ in saved.append(segment) }
+        let stt = TimedMeetingSTT(words: nil)
+        let recorder = MeetingRecorder(voiceToText: stt, session: session)
+        await recorder.consumeSystemAudio([Float](repeating: 0.5, count: 3_200), at: 0)
+        _ = await recorder.stopRecording()
+        XCTAssertTrue(stt.inputSampleCounts.isEmpty)
+        XCTAssertTrue(saved.isEmpty)
+        XCTAssertTrue(session.liveTranscript.isEmpty)
+    }
+
+    func testJitterDoesNotPadDiarizerOrFragmentASR() async {
+        var saved: [MeetingSegment] = []
+        let session = MeetingSession(meetingId: UUID()) { segment, _ in saved.append(segment) }
+        let provider = MockStreamingDiarizationProvider()
+        let stt = TimedMeetingSTT(words: nil)
+        let recorder = MeetingRecorder(voiceToText: stt, session: session,
+                                      speakerBufferManager: SpeakerBufferManager(provider: provider))
+        for index in 0..<100 {
+            let jitter = index % 2 == 0 ? 0.0 : 0.004
+            await recorder.consumeSystemAudio([Float](repeating: 0.5, count: 320),
+                                              at: Double(index) * 0.02 + jitter)
+        }
+        _ = await recorder.stopRecording()
+        XCTAssertEqual(provider.appendedSampleCount(), 32_000)
+        XCTAssertEqual(stt.inputSampleCounts, [32_000])
+        XCTAssertEqual(saved.count, 1)
+        XCTAssertEqual(saved.first?.endTime ?? -1, 2, accuracy: 0.0001)
+    }
+
 }

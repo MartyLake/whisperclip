@@ -24,10 +24,18 @@ final class SharedViewsTests: XCTestCase {
     }
 
     func testLabeledSpeakerReturnsPaletteColor() {
-        // .labeled speakers get colorIndex 2..8 based on hash
-        let color = speakerPaletteColor(.labeled("Speaker 1"))
-        // Should NOT be gray (not unknown) and NOT be nil
-        XCTAssertNotEqual(color, Color.gray, "Labeled speaker must not return gray")
+        XCTAssertEqual(Speaker.labeled("Speaker 1").colorIndex, 2)
+        XCTAssertEqual(Speaker.labeled("Speaker 2").colorIndex, 3)
+        XCTAssertEqual(Speaker.labeled("Speaker 8").colorIndex, 2)
+        XCTAssertEqual(speakerPaletteColor(.labeled("Speaker 1")), Color(hex: "#00C896"))
+    }
+
+    func testCustomLabelUsesStableHash() {
+        let index = Speaker.labeled("Alice").colorIndex
+        XCTAssertTrue((2...8).contains(index))
+        XCTAssertEqual(index, Speaker.labeled("Alice").colorIndex)
+        // Known FNV-1a fixture catches accidental use of randomized String.hashValue.
+        XCTAssertEqual(index, 8)
     }
 
     func testAllPaletteIndicesReturnDistinctColors() {

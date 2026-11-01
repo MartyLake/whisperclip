@@ -440,11 +440,9 @@ struct MeetingDetailView: View {
                 speakerStatsView
                 
                 // Transcript
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(currentMeeting.segments) { segment in
-                        TranscriptSegmentRow(segment: segment)
-                    }
-                }
+                ChatTranscriptView(segments: currentMeeting.segments, selectable: true, renameHandler: { label, name in
+                    try await MeetingSession.shared.renameSpeaker(meetingID: currentMeeting.id, currentLabel: label, to: name)
+                })
             }
         }
     }
@@ -664,39 +662,6 @@ struct MeetingDetailView: View {
 }
 
 // MARK: - Supporting Views
-
-struct TranscriptSegmentRow: View {
-    let segment: MeetingSegment
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Time
-            Text(segment.formattedTime)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.gray)
-                .frame(width: 40)
-            
-            // Speaker badge
-            Text(segment.speaker.displayName)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundColor(speakerColor)
-                .frame(width: 50)
-            
-            // Text
-            Text(segment.text)
-                .font(.system(size: 14))
-                .foregroundColor(.white.opacity(0.9))
-                .textSelection(.enabled)
-        }
-        .padding(12)
-        .background(Color.white.opacity(0.02))
-        .cornerRadius(8)
-    }
-    
-    private var speakerColor: Color {
-        speakerPaletteColor(segment.speaker)
-    }
-}
 
 struct ActionItemRow: View {
     let item: ActionItem

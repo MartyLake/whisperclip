@@ -135,11 +135,11 @@ struct MeetingNotesView: View {
             // Live transcript
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(session.liveTranscript) { segment in
-                            LiveSegmentRow(segment: segment)
-                                .id(segment.id)
-                        }
+                    VStack(alignment: .leading, spacing: 12) {
+                        ChatTranscriptView(segments: session.liveTranscript, selectable: false, renameHandler: { label, name in
+                            guard let id = session.currentMeetingId else { return "Meeting ended." }
+                            return try await session.renameSpeaker(meetingID: id, currentLabel: label, to: name)
+                        })
                         
                         if session.liveTranscript.isEmpty {
                             VStack(spacing: 12) {
@@ -152,14 +152,18 @@ struct MeetingNotesView: View {
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 40)
                         }
+                        Color.clear.frame(height: 1).id("transcript-bottom")
                     }
                     .padding(16)
                 }
                 .onChange(of: session.liveTranscript.count) { _, _ in
-                    if let lastSegment = session.liveTranscript.last {
-                        withAnimation {
-                            proxy.scrollTo(lastSegment.id, anchor: .bottom)
-                        }
+                    withAnimation {
+                        proxy.scrollTo("transcript-bottom", anchor: .bottom)
+                    }
+                }
+                .onChange(of: session.liveTranscript.last?.text) { _, _ in
+                    withAnimation {
+                        proxy.scrollTo("transcript-bottom", anchor: .bottom)
                     }
                 }
             }
@@ -481,52 +485,6 @@ struct MeetingNotesView: View {
 }
 
 // MARK: - Supporting Views
-
-struct LiveSegmentRow: View {
-    let segment: MeetingSegment
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Speaker icon
-            ZStack {
-                Circle()
-                    .fill(speakerColor.opacity(0.2))
-                    .frame(width: 32, height: 32)
-                
-                Image(systemName: segment.speaker.icon)
-                    .font(.system(size: 12))
-                    .foregroundColor(speakerColor)
-            }
-            
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(segment.speaker.displayName)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(speakerColor)
-                    
-                    Text(segment.formattedTime)
-                        .font(.system(size: 11))
-                        .foregroundColor(.gray)
-                }
-                
-                Text(segment.text)
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.9))
-            }
-            
-            Spacer()
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white.opacity(0.04))
-        )
-    }
-    
-    private var speakerColor: Color {
-        speakerPaletteColor(segment.speaker)
-    }
-}
 
 struct MeetingListRow: View {
     let meeting: MeetingNote

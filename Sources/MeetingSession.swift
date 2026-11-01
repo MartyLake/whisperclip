@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import SwiftUI
 
 /// Orchestrates the complete meeting lifecycle
 @MainActor
@@ -26,7 +27,9 @@ class MeetingSession: ObservableObject {
     
     // MARK: - Dependencies
     
-    private let storage = MeetingStorage.shared
+    private lazy var storage = MeetingStorage.shared
+    private lazy var voiceProfiles = VoiceProfileStore.shared
+    private var segmentWriter: ((MeetingSegment, UUID) -> Void)?
     private let recorder = MeetingRecorder.shared
     private let detector = MeetingDetector.shared
     private let ai = MeetingAI.shared
@@ -35,6 +38,7 @@ class MeetingSession: ObservableObject {
     
     private var cancellables = Set<AnyCancellable>()
     private var autoSaveTimer: Timer?
+    private(set) var speakerNames: [Int: String] = [:]
     
     // MARK: - Status
     
@@ -67,6 +71,25 @@ class MeetingSession: ObservableObject {
         }
     }
     
+    /// A session with an injected persistence boundary for deterministic resolution tests.
+    init(meetingId: UUID, segmentWriter: @escaping (MeetingSegment, UUID) -> Void) {
+        self.segmentWriter = segmentWriter
+        currentMeetingId = meetingId
+        isActive = true
+    }
+
+    init(storage: MeetingStorage, voiceProfiles: VoiceProfileStore, meetingID: UUID? = nil) {
+        self.storage = storage
+        self.voiceProfiles = voiceProfiles
+        currentMeetingId = meetingID
+        isActive = meetingID != nil
+    }
+
+    private func persistSegment(_ segment: MeetingSegment, to meetingId: UUID) {
+        if let segmentWriter { segmentWriter(segment, meetingId) }
+        else { storage.addSegment(segment, to: meetingId) }
+    }
+
     private func setupObservers() {
         // Listen for meeting app detection
         NotificationCenter.default.publisher(for: .meetingAppDetected)
@@ -111,6 +134,7 @@ class MeetingSession: ObservableObject {
         status = .starting
         errorMessage = nil
         liveTranscript = []
+        speakerNames = [:]
         
         do {
             // Create meeting in storage
@@ -123,8 +147,11 @@ class MeetingSession: ObservableObject {
             let capturedMeetingId = meeting.id
             try await recorder.startRecording(
                 onTranscript: { [weak self] segment in
-                    Task { @MainActor in
-                        self?.handleNewSegment(segment, forMeetingId: capturedMeetingId)
+                    guard let self else { return }
+                    if segment.isPending {
+                        self.addPendingSegment(segment)
+                    } else {
+                        self.handleNewSegment(segment, forMeetingId: capturedMeetingId)
                     }
                 },
                 onError: { [weak self] error in
@@ -257,9 +284,188 @@ class MeetingSession: ObservableObject {
         }
         
         // Add to storage - always save even if session is ending
-        storage.addSegment(segment, to: meetingId)
+        persistSegment(segment, to: meetingId)
         
-        Logger.log("New segment added to meeting \(meetingId): \(segment.text.prefix(50))...", log: Logger.general)
+        Logger.log("New segment added to meeting \(meetingId)", log: Logger.general)
+    }
+
+    func displaySpeaker(_ speaker: Speaker) -> Speaker {
+        guard case .labeled(let label) = speaker, label.hasPrefix("Speaker "),
+              let number = Int(label.dropFirst(8)), let name = speakerNames[number - 1] else { return speaker }
+        return .labeled(name)
+    }
+
+    func relabelSpeaker(slot: Int, to name: String) {
+        let old = speakerNames[slot] ?? "Speaker \(slot + 1)"
+        guard old != name else { return }
+        speakerNames[slot] = name
+        for row in liveTranscript where !row.isPending && row.speaker == .labeled(old) { row.speaker = .labeled(name) }
+        if let id = currentMeetingId, var meeting = storage.getMeeting(id) {
+            for row in meeting.segments where row.speaker == .labeled(old) { row.speaker = .labeled(name) }
+            for index in meeting.voices.indices where meeting.voices[index].slot == slot { meeting.voices[index].label = name }
+            storage.update(meeting)
+        }
+    }
+
+    func updateVoices(_ voices: [MeetingVoice]) {
+        guard let id = currentMeetingId, var meeting = storage.getMeeting(id) else { return }
+        var voices = voices
+        for index in voices.indices {
+            if let name = speakerNames[voices[index].slot] { voices[index].label = name }
+            var visited = Set<UUID>()
+            while let id = voices[index].profileID, visited.insert(id).inserted,
+                  let target = voiceProfiles.mergedProfileIDs[id] { voices[index].profileID = target }
+            if voiceProfiles.lastErasedAt.map({ meeting.startedAt <= $0 }) == true
+                || voices[index].profileID.map({ voiceProfiles.deletedProfileIDs.contains($0) }) == true {
+                voices[index].embedding = nil
+                voices[index].profileID = nil
+            }
+        }
+        guard meeting.voices != voices else { return }
+        meeting.voices = voices
+        storage.update(meeting)
+    }
+
+    func renameSpeaker(meetingID: UUID, currentLabel: String, to name: String) async throws -> String {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, currentLabel != "Me", name.caseInsensitiveCompare("Me") != .orderedSame,
+              var meeting = storage.getMeeting(meetingID) else { return "Enter a speaker name." }
+        let live = currentMeetingId == meetingID
+        if live, let tracker = recorder.voiceTracker {
+            updateVoices(await tracker.snapshot())
+            meeting = storage.getMeeting(meetingID) ?? meeting
+        }
+        let canonical = voiceProfiles.profile(named: name)?.name
+            ?? meeting.voices.first { $0.label.caseInsensitiveCompare(name) == .orderedSame }?.label ?? name
+        let indices = meeting.voices.indices.filter {
+            meeting.voices[$0].label == currentLabel || meeting.voices[$0].label.caseInsensitiveCompare(canonical) == .orderedSame
+        }
+        var saved = false
+        for index in indices {
+            var voice = meeting.voices[index]
+            if let vector = voice.embedding {
+                let profile = try voiceProfiles.addSample(vector, toProfileNamed: canonical)
+                voice.profileID = profile.id
+                saved = true
+            } else { voice.profileID = nil }
+            voice.label = canonical
+            meeting.voices[index] = voice
+            if live {
+                relabelSpeaker(slot: voice.slot, to: canonical)
+                await recorder.voiceTracker?.lock(slot: voice.slot, profileID: voice.profileID, name: canonical)
+            }
+        }
+        // Old meetings and unavailable models still support text-only naming.
+        if live && indices.isEmpty {
+            if currentLabel.hasPrefix("Speaker "), let number = Int(currentLabel.dropFirst(8)) {
+                relabelSpeaker(slot: number - 1, to: canonical)
+                await recorder.voiceTracker?.lock(slot: number - 1, profileID: nil, name: canonical)
+            }
+        }
+        for row in meeting.segments where row.speaker == .labeled(currentLabel) || row.speaker.displayName == currentLabel {
+            guard row.speaker != .me else { continue }
+            row.speaker = .labeled(canonical)
+        }
+        for row in liveTranscript where live && !row.isPending && row.speaker.displayName == currentLabel {
+            row.speaker = .labeled(canonical)
+        }
+        storage.update(meeting)
+        return saved ? "Voice saved" : "Not enough clean speech, or voice recognition unavailable. Name saved without voice."
+    }
+
+    // MARK: - Pending Segment API
+
+    func addPendingSegment(_ segment: MeetingSegment) {
+        guard currentMeetingId != nil else { return }
+        liveTranscript.append(segment)
+        liveTranscript.sort { $0.startTime < $1.startTime }
+    }
+
+    func finalizeSegment(id: UUID, text: String, speaker: Speaker) {
+        guard let segment = liveTranscript.first(where: { $0.id == id }), segment.isPending else {
+            Logger.log("MeetingSession.finalizeSegment: segment \(id) not found in liveTranscript", log: Logger.general, type: .error)
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            segment.text = text
+            segment.speaker = speaker
+            segment.isPending = false
+            segment.isAwaitingFinalPartial = false
+        }
+
+        if let meetingId = currentMeetingId {
+            persistSegment(segment, to: meetingId)
+        }
+    }
+
+    /// Resolve before the first storage write. Repeated or stale resolutions are ignored.
+    func resolvePendingSegment(id: UUID, parts: [MeetingSegment]) {
+        guard let index = liveTranscript.firstIndex(where: { $0.id == id }),
+              liveTranscript[index].isPending, !parts.isEmpty else {
+            Logger.log("MeetingSession.resolvePendingSegment: missing or resolved row \(id)", log: Logger.general)
+            return
+        }
+        if parts.count == 1 {
+            let original = liveTranscript[index]
+            original.startTime = parts[0].startTime
+            original.endTime = parts[0].endTime
+            original.confidence = parts[0].confidence
+            finalizeSegment(id: id, text: parts[0].text, speaker: parts[0].speaker)
+            liveTranscript.sort { $0.startTime < $1.startTime }
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            for part in parts {
+                part.isPending = false
+                part.isAwaitingFinalPartial = false
+            }
+            liveTranscript.replaceSubrange(index...index, with: parts)
+            liveTranscript.sort { $0.startTime < $1.startTime }
+        }
+        if let meetingId = currentMeetingId {
+            for part in parts { persistSegment(part, to: meetingId) }
+        }
+    }
+
+    func replaceSegment(id: UUID, with newSegments: [MeetingSegment]) {
+        guard let index = liveTranscript.firstIndex(where: { $0.id == id }) else {
+            Logger.log("MeetingSession.replaceSegment: segment \(id) not found", log: Logger.general, type: .error)
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            liveTranscript.remove(at: index)
+            liveTranscript.insert(contentsOf: newSegments, at: index)
+        }
+
+        if let meetingId = currentMeetingId {
+            for segment in newSegments {
+                persistSegment(segment, to: meetingId)
+            }
+        }
+    }
+
+    func removeSegment(id: UUID) {
+        guard let index = liveTranscript.firstIndex(where: { $0.id == id }) else {
+            Logger.log("MeetingSession.removeSegment: segment \(id) not found", log: Logger.general)
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            liveTranscript.remove(at: index)
+        }
+    }
+
+    func markSegmentAwaitingFinalPartial(id: UUID, isAwaiting: Bool) {
+        guard let segment = liveTranscript.first(where: { $0.id == id }) else {
+            Logger.log("MeetingSession.markSegmentAwaitingFinalPartial: segment \(id) not found", log: Logger.general)
+            return
+        }
+
+        withAnimation(.easeInOut(duration: 0.2)) {
+            segment.isAwaitingFinalPartial = isAwaiting
+        }
     }
     
     // MARK: - Summary Generation

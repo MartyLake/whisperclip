@@ -1,16 +1,19 @@
 import Foundation
+import Observation
 
 /// Represents a speaker in a meeting.
 /// - `.me`: the local microphone channel (always the app user)
 /// - `.other`: legacy system-audio channel label (pre-diarization)
 /// - `.unknown`: unidentified speaker
 /// - `.labeled(String)`: a diarized speaker identified by the diarization model (e.g. "Speaker 1")
-enum Speaker: Codable, Hashable {
+enum Speaker: Codable, Hashable, Sendable {
     case me
     case other
     case unknown
     /// A diarized speaker with a human-readable label such as "Speaker 1".
     case labeled(String)
+    /// System audio awaiting speaker attribution.
+    case pending
 
     // MARK: Codable
 
@@ -23,6 +26,7 @@ enum Speaker: Codable, Hashable {
             case "Me":      self = .me
             case "Other":   self = .other
             case "Unknown": self = .unknown
+            case "Pending": self = .pending
             default:        self = .labeled(raw)
             }
             return
@@ -33,6 +37,7 @@ enum Speaker: Codable, Hashable {
         case "me":      self = .me
         case "other":   self = .other
         case "labeled": self = .labeled(try container.decode(String.self, forKey: .label))
+        case "pending": self = .pending
         default:        self = .unknown
         }
     }
@@ -42,6 +47,7 @@ enum Speaker: Codable, Hashable {
         switch displayName {
         case "Me":      self = .me
         case "Other":   self = .other
+        case "Pending": self = .pending
         case "Unknown", "": self = .unknown
         default:        self = .labeled(displayName)
         }
@@ -55,6 +61,8 @@ enum Speaker: Codable, Hashable {
             var c = encoder.singleValueContainer(); try c.encode("Other")
         case .unknown:
             var c = encoder.singleValueContainer(); try c.encode("Unknown")
+        case .pending:
+            var c = encoder.singleValueContainer(); try c.encode("Pending")
         case .labeled(let label):
             var c = encoder.container(keyedBy: CodingKeys.self)
             try c.encode("labeled", forKey: .type)
@@ -69,6 +77,7 @@ enum Speaker: Codable, Hashable {
         case .me:             return "Me"
         case .other:          return "Other"
         case .unknown:        return "Unknown"
+        case .pending:        return "Pending"
         case .labeled(let l): return l
         }
     }
@@ -78,6 +87,7 @@ enum Speaker: Codable, Hashable {
         case .me:      return "person.fill"
         case .other:   return "person.2.fill"
         case .unknown: return "questionmark.circle"
+        case .pending: return "ellipsis.circle"
         case .labeled: return "person.crop.circle"
         }
     }
@@ -85,43 +95,119 @@ enum Speaker: Codable, Hashable {
     // MARK: Color hint index (for consistent per-speaker colours in UI)
 
     /// A stable index (0-based) used to pick a colour from a palette.
-    /// .me → 0, .other → 1, .unknown → 9, .labeled → hash-derived 2…8
+    /// .me → 0, .other → 1, .unknown → 9, .pending → 8.
+    /// Speaker N cycles through 2…8; custom labels use deterministic FNV-1a.
     var colorIndex: Int {
         switch self {
         case .me:             return 0
         case .other:          return 1
+        case .pending:        return 8
         case .unknown:        return 9
-        case .labeled(let l): return 2 + abs(l.hashValue) % 7
+        case .labeled(let label):
+            if label.hasPrefix("Speaker "),
+               let number = Int(label.dropFirst("Speaker ".count)), number >= 1 {
+                return 2 + (number - 1) % 7
+            }
+            var hash: UInt64 = 14695981039346656037
+            for byte in label.utf8 {
+                hash = (hash ^ UInt64(byte)) &* 1099511628211
+            }
+            return 2 + Int(hash % 7)
         }
     }
 }
 
 /// A single segment of transcription with speaker info
-struct MeetingSegment: Identifiable, Codable, Hashable {
+@Observable
+final class MeetingSegment: Identifiable, Codable, Hashable {
     let id: UUID
-    let speaker: Speaker
-    let text: String
-    let startTime: TimeInterval
-    let endTime: TimeInterval
-    let confidence: Float
-    
-    init(speaker: Speaker, text: String, startTime: TimeInterval, endTime: TimeInterval, confidence: Float = 1.0) {
+    var speaker: Speaker
+    var text: String
+    var startTime: TimeInterval
+    var endTime: TimeInterval
+    var confidence: Float
+    var isPending: Bool
+    var isAwaitingFinalPartial: Bool
+
+    init(
+        speaker: Speaker,
+        text: String,
+        startTime: TimeInterval,
+        endTime: TimeInterval,
+        confidence: Float = 1.0,
+        isPending: Bool = false,
+        isAwaitingFinalPartial: Bool = false
+    ) {
         self.id = UUID()
         self.speaker = speaker
         self.text = text
         self.startTime = startTime
         self.endTime = endTime
         self.confidence = confidence
+        self.isPending = isPending
+        self.isAwaitingFinalPartial = isAwaitingFinalPartial
     }
-    
+
     var duration: TimeInterval {
         endTime - startTime
     }
-    
+
     var formattedTime: String {
         let minutes = Int(startTime) / 60
         let seconds = Int(startTime) % 60
         return String(format: "%02d:%02d", minutes, seconds)
+    }
+
+    var displayText: String {
+        text.isEmpty ? "..." : text
+    }
+
+    var displaySpeaker: Speaker {
+        guard isPending else { return speaker }
+        return speaker == .me ? .me : .pending
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case speaker
+        case text
+        case startTime
+        case endTime
+        case confidence
+        case isPending
+        case isAwaitingFinalPartial
+    }
+
+    required init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(UUID.self, forKey: .id)
+        self.speaker = try container.decode(Speaker.self, forKey: .speaker)
+        self.text = try container.decode(String.self, forKey: .text)
+        self.startTime = try container.decode(TimeInterval.self, forKey: .startTime)
+        self.endTime = try container.decode(TimeInterval.self, forKey: .endTime)
+        self.confidence = try container.decodeIfPresent(Float.self, forKey: .confidence) ?? 1.0
+        self.isPending = try container.decodeIfPresent(Bool.self, forKey: .isPending) ?? false
+        self.isAwaitingFinalPartial = try container.decodeIfPresent(Bool.self, forKey: .isAwaitingFinalPartial) ?? false
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(speaker, forKey: .speaker)
+        try container.encode(text, forKey: .text)
+        try container.encode(startTime, forKey: .startTime)
+        try container.encode(endTime, forKey: .endTime)
+        try container.encode(confidence, forKey: .confidence)
+        try container.encode(isPending, forKey: .isPending)
+        try container.encode(isAwaitingFinalPartial, forKey: .isAwaitingFinalPartial)
+    }
+
+    static func == (lhs: MeetingSegment, rhs: MeetingSegment) -> Bool {
+        lhs.id == rhs.id
+    }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
     }
 }
 
@@ -298,6 +384,14 @@ enum MeetingSource: String, Codable, CaseIterable {
     }
 }
 
+struct MeetingVoice: Codable, Hashable, Sendable {
+    let slot: Int
+    var label: String
+    var embedding: [Float]?
+    var speechSeconds: Double
+    var profileID: UUID?
+}
+
 /// Full meeting note document
 struct MeetingNote: Identifiable, Codable, Hashable {
     let id: UUID
@@ -317,6 +411,31 @@ struct MeetingNote: Identifiable, Codable, Hashable {
     var qaHistory: [MeetingQA]
     var isFavorite: Bool
     var tags: [String]
+    var voices: [MeetingVoice] = []
+
+    func voice(forLabel label: String) -> MeetingVoice? {
+        voices.first { $0.label == label }
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, source, status, startedAt, endedAt, segments, summary, qaHistory, isFavorite, tags, voices
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        source = try c.decode(MeetingSource.self, forKey: .source)
+        status = try c.decode(MeetingStatus.self, forKey: .status)
+        startedAt = try c.decode(Date.self, forKey: .startedAt)
+        endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+        segments = try c.decode([MeetingSegment].self, forKey: .segments)
+        summary = try c.decode(MeetingSummary.self, forKey: .summary)
+        qaHistory = try c.decode([MeetingQA].self, forKey: .qaHistory)
+        isFavorite = try c.decode(Bool.self, forKey: .isFavorite)
+        tags = try c.decode([String].self, forKey: .tags)
+        voices = try c.decodeIfPresent([MeetingVoice].self, forKey: .voices) ?? []
+    }
     
     init(title: String = "New Meeting", source: MeetingSource = .manual) {
         self.id = UUID()

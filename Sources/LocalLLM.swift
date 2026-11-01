@@ -2,6 +2,7 @@ import Foundation
 import MLXLLM
 import MLXLMCommon
 import MLX
+import Tokenizers
 
 class LocalLLM {
     private static var gpuCacheLimitSet = false
@@ -47,6 +48,7 @@ class LocalLLM {
     }
     
     static func loadModel(modelRepo: String, modelName: String) async throws -> ModelContainer {
+        await ModelMigration.runAtLaunch()
         let modelPath = try await ModelStorage.shared.getModelPath(modelRepo: modelRepo, modelName: modelName)
 
         setupGPUCacheLimitOnce()
@@ -77,13 +79,19 @@ class LocalLLM {
             modelConfiguration = LLMRegistry.qwen3_4b_4bit
         case MlxCommunityRepo + "/" + Qwen3_30B_A3B_4bit:
             modelConfiguration = LLMRegistry.qwen3MoE_30b_a3b_4bit
+        case MlxCommunityRepo + "/" + Gemma_4_E4B_it_4bit:
+            modelConfiguration = LLMRegistry.gemma4_e4b_it_4bit
         default:
             throw NSError(domain: "TextEnhancer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Unsupported model"])
         }
 
         modelConfiguration.id = .directory(modelPath)
 
-        let modelContainer = try await LLMModelFactory.shared.loadContainer(configuration: modelConfiguration)
+        let modelContainer = try await LLMModelFactory.shared.loadContainer(
+            from: LocalOnlyModelDownloader(),
+            using: TransformersTokenizerLoader(),
+            configuration: modelConfiguration
+        )
         Logger.log("Model \(modelRepo)/\(modelName) loaded", log: Logger.general)
         return modelContainer
     }
@@ -133,5 +141,72 @@ private actor OutputActor {
 
     func getOutput() -> String {
         return output
+    }
+}
+
+private struct LocalOnlyModelDownloader: MLXLMCommon.Downloader {
+    func download(
+        id: String,
+        revision: String?,
+        matching patterns: [String],
+        useLatest: Bool,
+        progressHandler: @Sendable @escaping (Progress) -> Void
+    ) async throws -> URL {
+        throw NSError(
+            domain: "LocalLLM",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: "Models must be downloaded before they can be loaded"]
+        )
+    }
+}
+
+private struct TransformersTokenizerLoader: MLXLMCommon.TokenizerLoader {
+    func load(from directory: URL) async throws -> any MLXLMCommon.Tokenizer {
+        let upstream = try await Tokenizers.AutoTokenizer.from(modelFolder: directory)
+        return TransformersTokenizerAdapter(upstream)
+    }
+}
+
+private struct TransformersTokenizerAdapter: MLXLMCommon.Tokenizer {
+    private let upstream: any Tokenizers.Tokenizer
+
+    init(_ upstream: any Tokenizers.Tokenizer) {
+        self.upstream = upstream
+    }
+
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] {
+        upstream.encode(text: text, addSpecialTokens: addSpecialTokens)
+    }
+
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        upstream.decode(tokens: tokenIds, skipSpecialTokens: skipSpecialTokens)
+    }
+
+    func convertTokenToId(_ token: String) -> Int? {
+        upstream.convertTokenToId(token)
+    }
+
+    func convertIdToToken(_ id: Int) -> String? {
+        upstream.convertIdToToken(id)
+    }
+
+    var bosToken: String? { upstream.bosToken }
+    var eosToken: String? { upstream.eosToken }
+    var unknownToken: String? { upstream.unknownToken }
+
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] {
+        do {
+            return try upstream.applyChatTemplate(
+                messages: messages,
+                tools: tools,
+                additionalContext: additionalContext
+            )
+        } catch Tokenizers.TokenizerError.missingChatTemplate {
+            throw MLXLMCommon.TokenizerError.missingChatTemplate
+        }
     }
 }

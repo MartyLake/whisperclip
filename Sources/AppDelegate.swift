@@ -14,6 +14,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     private var cancellables = Set<AnyCancellable>()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Task.detached(priority: .utility) {
+            await ModelMigration.migrate()
+        }
         setupSignalHandlers()
         setupStatusBarItem()
 

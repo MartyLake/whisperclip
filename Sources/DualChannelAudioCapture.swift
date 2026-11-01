@@ -35,10 +35,22 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
     // MARK: - Audio Engine (Microphone)
     
     private var audioEngine: AVAudioEngine?
+    private var activeMicrophoneRoute: MicrophoneRoute?
+    private var engineConfigurationObserver: NSObjectProtocol?
+    private var defaultInputMonitor: DefaultInputDevice.Monitor?
+    private let microphoneHeartbeat = CaptureHeartbeat()
     
     // MARK: - Screen Capture (System Audio)
     
     private var scStream: SCStream?
+    
+    // MARK: - Device Change Recovery
+    
+    /// True from the end of `startCapture` until `stopCapture` begins.
+    private var recoveryEnabled = false
+    private var microphoneRestartTask: Task<Void, Never>?
+    private var microphoneWatchdogTask: Task<Void, Never>?
+    private var systemAudioRestartTask: Task<Void, Never>?
     
     // MARK: - Thread-safe buffers (using actor for synchronization)
     
@@ -47,16 +59,15 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
     // MARK: - Configuration
     
     let sampleRate: Int = 16000
-    private let chunkDuration: TimeInterval = 5.0  // Process every 5 seconds
     
     // MARK: - State
     
     /// Set once before capture starts, read from nonisolated audio callbacks
     nonisolated(unsafe) private var startTime: Date?
-    private var chunkTimer: Timer?
     private var levelTimer: Timer?
     private var audioCallback: AudioChunkCallback?
     nonisolated(unsafe) private var onSystemBatch: (@Sendable ([Float], TimeInterval) -> Void)?
+    nonisolated(unsafe) private var onMicrophoneLevel: (@Sendable (Float) -> Void)?
     
     // MARK: - Initialization
     
@@ -85,7 +96,8 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
     /// Start capturing from both microphone and system audio
     func startCapture(
         onAudioChunk: @escaping AudioChunkCallback,
-        onSystemBatch: @escaping @Sendable ([Float], TimeInterval) -> Void
+        onSystemBatch: @escaping @Sendable ([Float], TimeInterval) -> Void,
+        onMicrophoneLevel: (@Sendable (Float) -> Void)? = nil
     ) async throws {
         guard !isCapturing else {
             throw DualChannelError.alreadyCapturing
@@ -93,6 +105,7 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
         
         audioCallback = onAudioChunk
         self.onSystemBatch = onSystemBatch
+        self.onMicrophoneLevel = onMicrophoneLevel
         startTime = Date()
         
         // Start microphone capture
@@ -100,19 +113,22 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
         
         // Start system audio capture (if permission granted)
         if await checkPermissions() {
-            try await startSystemAudioCapture()
+            do {
+                try await startSystemAudioCapture()
+            } catch {
+                teardownMicrophoneEngine()
+                throw error
+            }
         } else {
             Logger.log("System audio capture not available - only microphone will be used", log: Logger.general)
             lastError = "System audio permission not granted. Only your voice will be captured."
         }
         
-        // Start chunk processing timer
-        startChunkProcessing()
-        
         // Start level monitoring
         startLevelMonitoring()
         
         isCapturing = true
+        startMicrophoneRecovery()
         Logger.log("Dual channel audio capture started", log: Logger.general)
     }
     
@@ -126,15 +142,17 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
         }
         
         // Stop timers
-        chunkTimer?.invalidate()
-        chunkTimer = nil
         levelTimer?.invalidate()
         levelTimer = nil
         
+        // Stop recovery first so nothing restarts an input while it is being torn down
+        stopRecovery()
+        if let restart = systemAudioRestartTask {
+            await restart.value
+        }
+        
         // Stop audio inputs first so no new samples arrive
-        audioEngine?.stop()
-        audioEngine?.inputNode.removeTap(onBus: 0)
-        audioEngine = nil
+        teardownMicrophoneEngine()
         
         if let stream = scStream {
             try? await stream.stopCapture()
@@ -143,10 +161,11 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
         
         // Drain remaining microphone audio from buffers (awaited, not fire-and-forget)
         let micResult = await audioBuffers.getMicSamples()
-        
+
         isCapturing = false
         audioCallback = nil
         onSystemBatch = nil
+        onMicrophoneLevel = nil
         
         Logger.log("Dual channel audio capture stopped", log: Logger.general)
         
@@ -164,6 +183,12 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
         
         let inputNode = engine.inputNode
         let inputFormat = inputNode.outputFormat(forBus: 0)
+        let route = MicrophoneRoute.current(format: inputFormat)
+        
+        guard route.isUsable else {
+            Logger.log("Microphone format not ready: \(route)", log: Logger.audio, type: .error)
+            throw DualChannelError.microphoneSetupFailed
+        }
         
         // Create converter to 16kHz mono
         let outputFormat = AVAudioFormat(
@@ -185,7 +210,118 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
         engine.prepare()
         try engine.start()
         
-        Logger.log("Microphone capture started", log: Logger.general)
+        observeConfigurationChanges(of: engine)
+        activeMicrophoneRoute = route
+        microphoneHeartbeat.beat()
+        
+        Logger.log("Microphone capture started on \(route)", log: Logger.audio)
+    }
+    
+    private func teardownMicrophoneEngine() {
+        if let observer = engineConfigurationObserver {
+            NotificationCenter.default.removeObserver(observer)
+            engineConfigurationObserver = nil
+        }
+        audioEngine?.stop()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine = nil
+        activeMicrophoneRoute = nil
+    }
+    
+    // MARK: - Microphone Recovery
+    
+    private func startMicrophoneRecovery() {
+        recoveryEnabled = true
+        defaultInputMonitor = DefaultInputDevice.Monitor { [weak self] in
+            Task { @MainActor in
+                self?.microphoneRouteMayHaveChanged(reason: "default input changed")
+            }
+        }
+        microphoneWatchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled, let self else { return }
+                self.checkMicrophoneHeartbeat()
+            }
+        }
+    }
+    
+    private func stopRecovery() {
+        recoveryEnabled = false
+        defaultInputMonitor = nil
+        microphoneWatchdogTask?.cancel()
+        microphoneWatchdogTask = nil
+        microphoneRestartTask?.cancel()
+        microphoneRestartTask = nil
+        systemAudioRestartTask?.cancel()
+    }
+    
+    private func observeConfigurationChanges(of engine: AVAudioEngine) {
+        engineConfigurationObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: nil
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.microphoneRouteMayHaveChanged(reason: "engine configuration changed")
+            }
+        }
+    }
+    
+    private func microphoneRouteMayHaveChanged(reason: String) {
+        guard recoveryEnabled, let engine = audioEngine else { return }
+        
+        let current = MicrophoneRoute.current(format: engine.inputNode.outputFormat(forBus: 0))
+        let active = activeMicrophoneRoute.map(String.init(describing:)) ?? "none"
+        Logger.log("Microphone event: \(reason); running=\(engine.isRunning), active=\(active), current=\(current)",
+                   log: Logger.audio)
+        
+        guard MicrophoneRecovery.shouldRestart(
+            active: activeMicrophoneRoute,
+            current: current,
+            isEngineRunning: engine.isRunning
+        ) else { return }
+        
+        scheduleMicrophoneRestart(reason: reason)
+    }
+    
+    private func checkMicrophoneHeartbeat() {
+        guard recoveryEnabled, microphoneRestartTask == nil else { return }
+        let silence = microphoneHeartbeat.secondsSinceLastBeat()
+        guard MicrophoneRecovery.isStalled(secondsSinceLastBuffer: silence) else { return }
+        scheduleMicrophoneRestart(reason: String(format: "no buffers for %.1fs", silence))
+    }
+    
+    /// Rebuilds the engine, retrying while the new device settles. A new engine is required
+    /// because the old one keeps its device and format. A later event replaces a pending
+    /// restart, which collapses bursts into one rebuild.
+    private func scheduleMicrophoneRestart(reason: String) {
+        guard recoveryEnabled else { return }
+        
+        microphoneRestartTask?.cancel()
+        microphoneRestartTask = Task { [weak self] in
+            for delay in MicrophoneRecovery.restartDelays {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled, let self else { return }
+                if self.restartMicrophone(reason: reason) { break }
+            }
+            guard !Task.isCancelled else { return }
+            self?.microphoneRestartTask = nil
+        }
+    }
+    
+    private func restartMicrophone(reason: String) -> Bool {
+        let gap = microphoneHeartbeat.secondsSinceLastBeat()
+        teardownMicrophoneEngine()
+        do {
+            try startMicrophoneCapture()
+            Logger.log(String(format: "Microphone restarted after %.1fs gap (%@)", gap, reason), log: Logger.audio)
+            return true
+        } catch {
+            teardownMicrophoneEngine()
+            Logger.log("Microphone restart failed (\(reason)): \(error)", log: Logger.audio, type: .error)
+            return false
+        }
     }
     
     private func processMicrophoneBuffer(_ buffer: AVAudioPCMBuffer, converter: AVAudioConverter, outputFormat: AVAudioFormat) {
@@ -213,18 +349,22 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
         
         // Update level from recent samples
         if samples.count > 0 {
-            let rms = sqrt(samples.map { $0 * $0 }.reduce(0, +) / Float(samples.count))
+            var rms: Float = 0
+            vDSP_rmsqv(samples, 1, &rms, vDSP_Length(samples.count))
             let db = 20 * log10(max(rms, 0.0001))
             Task { @MainActor in
                 self.micLevel = db
             }
+            if let levelCallback = self.onMicrophoneLevel {
+                levelCallback(db)
+            }
         }
+        
+        microphoneHeartbeat.beat()
         
         // Add to buffer using actor with elapsed time
         let elapsed = self.startTime.map { Date().timeIntervalSince($0) } ?? 0
-        Task {
-            await self.audioBuffers.appendMicSamples(samples, atTime: elapsed)
-        }
+        dispatchMicrophoneSamples(samples, elapsed: elapsed)
     }
     
     // MARK: - System Audio Capture
@@ -262,32 +402,6 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
         Logger.log("System audio capture started", log: Logger.general)
     }
     
-    // MARK: - Chunk Processing
-    
-    private func startChunkProcessing() {
-        chunkTimer = Timer.scheduledTimer(withTimeInterval: chunkDuration, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                self?.processChunks()
-            }
-        }
-    }
-    
-    private func processChunks() {
-        guard let callback = audioCallback else { return }
-        
-        let minSamples = sampleRate * 2  // At least 2 seconds
-        
-        // Process buffers asynchronously, using per-source timestamps
-        Task {
-            // Get microphone samples with their actual start time
-            let micResult = await audioBuffers.getMicSamples()
-            if micResult.samples.count >= minSamples {
-                Logger.log("Processing microphone chunk: \(micResult.samples.count) samples at \(String(format: "%.1f", micResult.startTime))s", log: Logger.general)
-                callback(.microphone, micResult.samples, micResult.startTime)
-            }
-        }
-    }
-
     /// Processes raw system audio buffer data and invokes onSystemBatch.
     /// Extracted for testability - SCStreamOutput handler calls this after format validation.
     nonisolated internal func processSystemAudioSamples(
@@ -305,6 +419,25 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
             )
         )
         onSystemBatch(samples, elapsed)
+    }
+
+    /// Routes converted microphone samples to the live callback immediately.
+    /// Falls back to buffering only when the live callback is unavailable.
+    internal func dispatchMicrophoneSamples(
+        _ samples: [Float],
+        elapsed: TimeInterval,
+        callbackOverride: AudioChunkCallback? = nil
+    ) {
+        guard !samples.isEmpty else { return }
+
+        if let callback = callbackOverride ?? audioCallback {
+            callback(.microphone, samples, elapsed)
+            return
+        }
+
+        Task {
+            await self.audioBuffers.appendMicSamples(samples, atTime: elapsed)
+        }
     }
     
     // MARK: - Level Monitoring
@@ -339,9 +472,36 @@ class DualChannelAudioCapture: NSObject, ObservableObject {
 
 extension DualChannelAudioCapture: SCStreamDelegate {
     nonisolated func stream(_ stream: SCStream, didStopWithError error: Error) {
+        let stoppedStream = ObjectIdentifier(stream)
         Task { @MainActor in
             Logger.log("System audio stream stopped with error: \(error)", log: Logger.general, type: .error)
             self.lastError = error.localizedDescription
+            self.scheduleSystemAudioRestart(after: stoppedStream)
+        }
+    }
+}
+
+// MARK: - System Audio Recovery
+
+extension DualChannelAudioCapture {
+    private func scheduleSystemAudioRestart(after stoppedStream: ObjectIdentifier) {
+        guard recoveryEnabled, let scStream, ObjectIdentifier(scStream) == stoppedStream else { return }
+        self.scStream = nil
+        
+        systemAudioRestartTask = Task { [weak self] in
+            for delay in MicrophoneRecovery.restartDelays {
+                try? await Task.sleep(for: delay)
+                guard !Task.isCancelled, let self else { return }
+                do {
+                    try await self.startSystemAudioCapture()
+                    self.lastError = nil
+                    Logger.log("System audio restarted", log: Logger.audio)
+                    return
+                } catch {
+                    Logger.log("System audio restart failed: \(error)", log: Logger.audio, type: .error)
+                }
+            }
+            self?.lastError = "System audio stopped and could not be restarted."
         }
     }
 }
